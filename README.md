@@ -46,8 +46,8 @@ makes a notebook written on the iPad show up on the MacBook.
 
 1. Go to [console.cloud.google.com/projectcreate](https://console.cloud.google.com/projectcreate),
    signed in as **mdkuper.uk@gmail.com**. Name the project **SuperNotes**. Create.
-2. **APIs & Services → Library**. Search **Google Drive API** → Enable.
-   If you want handwriting-to-text, also enable **Cloud Vision API**.
+2. **APIs & Services → Library**. Search **Google Drive API** → Enable. Nothing else —
+   no other API is used and no billing account is attached.
 3. **APIs & Services → OAuth consent screen**:
    - User type: **External** → Create
    - App name: `SuperNotes`, support email and developer email: your Gmail
@@ -68,18 +68,15 @@ Google will warn that the app "isn't verified" — that's expected for an app on
 Click **Advanced → Go to SuperNotes (unsafe)**. It's your own project; there is nothing on the
 other side but the code in this folder.
 
-### Handwriting → text (optional)
+### Handwriting → text
 
-**Credentials → Create credentials → API key**. Restrict it:
-*Application restrictions* → **Websites**, add your address;
-*API restrictions* → **Cloud Vision API** only. Paste the key into Settings.
+Deliberately not built in. Every handwriting-recognition engine a browser can reach — Google
+Cloud Vision, MyScript, Azure Read — is a paid cloud service, and this app is built to cost
+nothing to run.
 
-Google's free tier covers 1,000 images per month; past that it is roughly $1.50 per 1,000.
-Check [current pricing](https://cloud.google.com/vision/pricing) before you lean on it heavily.
-
-> On an iPad there is a free alternative for typed fields: tap into any text box and write with
-> the Apple Pencil. iPadOS Scribble converts it on-device at no cost. The Cloud Vision route is
-> for converting handwriting you've already inked onto the page.
+On iPad there is a free alternative that is arguably better: tap into any text box and write
+with the Apple Pencil. iPadOS **Scribble** converts it on-device, instantly, with no network
+call, no API key and no account.
 
 ---
 
@@ -126,6 +123,18 @@ audio embedded. Newest edit wins per notebook. Everything saves locally the inst
 Drive catches up when there's a connection.
 
 ---
+
+## What this costs
+
+Nothing, and there is no path by which it can start costing something.
+
+- **Hosting** — GitHub Pages is free for public repositories. Limits are 1 GB of site size and
+  100 GB/month of bandwidth; this site is about 250 KB.
+- **Google** — only the Drive API is enabled, which is free. No billing account is attached to
+  the Cloud project and no card is on file, so a runaway call fails rather than charges.
+- **The one real ceiling** is your Google account's free 15 GB of Drive storage, shared with
+  Gmail and Photos. Notebook files are small; embedded photos and voice recordings are what
+  would eventually add up.
 
 ## About iCloud
 

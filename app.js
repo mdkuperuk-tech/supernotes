@@ -274,8 +274,6 @@ class App {
         <p class="muted">Notebooks sync to a <b>SuperNotes</b> folder in your Google Drive. The app uses the narrow <code>drive.file</code> permission, so it can only ever see files it created itself.</p>
         <label class="lbl">OAuth client ID</label>
         <input class="field" data-cid placeholder="1234567890-abc....apps.googleusercontent.com" value="${d.clientId}">
-        <label class="lbl">Cloud Vision API key <span class="opt">— for handwriting → text</span></label>
-        <input class="field" data-vk placeholder="AIza..." value="${d.visionKey}">
         <div class="row gap">
           <button class="primary" data-x="save">Save keys</button>
           <button data-x="${d.signedIn ? 'out' : 'in'}">${d.signedIn ? 'Disconnect' : 'Connect Google Drive'}</button>
@@ -285,11 +283,10 @@ class App {
         <details><summary>How do I get these? (5 minutes, one time)</summary>
           <ol class="howto">
             <li>Go to <a href="https://console.cloud.google.com/projectcreate" target="_blank" rel="noopener">console.cloud.google.com</a> and create a project called <b>SuperNotes</b>.</li>
-            <li><b>APIs &amp; Services → Library</b>: enable <b>Google Drive API</b> (and <b>Cloud Vision API</b> if you want handwriting→text).</li>
+            <li><b>APIs &amp; Services → Library</b>: enable <b>Google Drive API</b>. Nothing else.</li>
             <li><b>OAuth consent screen</b>: External, add your own Gmail as a Test user, scope <code>drive.file</code>.</li>
             <li><b>Credentials → Create credentials → OAuth client ID → Web application</b>. Under <b>Authorised JavaScript origins</b> add exactly: <code data-origin></code></li>
             <li>Copy the client ID into the box above.</li>
-            <li>For Vision: <b>Credentials → Create credentials → API key</b>, then restrict it to this website and to the Cloud Vision API.</li>
           </ol>
         </details>
       </section>
@@ -305,6 +302,11 @@ class App {
           <button data-x="import">Restore from a backup file</button>
           <button data-x="install">Install on this device</button>
         </div>
+      </section>
+      <section>
+        <h3>Cost</h3>
+        <p class="muted">Nothing in SuperNotes can bill you. It is static files on GitHub Pages (free for public repositories) plus the Google Drive API, which is free at any volume you will reach. No paid service is called and no billing account is attached to the Google project. The only ceiling is your Google account's own free 15&nbsp;GB of Drive storage, shared with Gmail and Photos — notebooks are small, but photos and voice recordings do count toward it.</p>
+        <p class="muted">Handwriting-to-text is deliberately absent: every engine a browser can reach is a paid cloud service. On iPad, write with the Apple Pencil straight into a text box instead — iPadOS Scribble converts it on-device, free.</p>
       </section>
       <section>
         <h3>About iCloud</h3>
@@ -329,7 +331,7 @@ class App {
       const st = body.querySelector('[data-st]');
       try {
         if (b.dataset.x === 'save') {
-          await Drive.saveConfig({ clientId: body.querySelector('[data-cid]').value, visionKey: body.querySelector('[data-vk]').value });
+          await Drive.saveConfig({ clientId: body.querySelector('[data-cid]').value });
           toast('Saved');
         }
         if (b.dataset.x === 'in') { await Drive.signIn(); toast('Connected to Google Drive'); await this.syncNow(); }

@@ -1,5 +1,5 @@
 /* SuperNotes service worker — offline shell */
-const V = 'supernotes-v1';
+const V = 'supernotes-v2';
 const SHELL = [
   './', './index.html', './manifest.webmanifest',
   './style.css',

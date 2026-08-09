@@ -204,7 +204,6 @@ export class Editor {
     const items = [
       ['paper', 'Change paper', 'grid'],
       ['cover', 'Change cover', 'book'],
-      ['ocrpage', 'Convert page to text', 'ocr'],
       ['fingerdraw', this.app.settings.fingerDraw ? 'Finger drawing: ON' : 'Finger drawing: off', 'hand'],
       ['clearpage', 'Clear this page', 'trash'],
       ['delpage', 'Delete this page', 'trash']
@@ -219,7 +218,6 @@ export class Editor {
       const m = b.dataset.m;
       if (m === 'paper') this.paperPicker();
       if (m === 'cover') this.app.coverPicker(this.nb, () => {});
-      if (m === 'ocrpage') this.ocrPage();
       if (m === 'fingerdraw') { this.app.settings.fingerDraw = !this.app.settings.fingerDraw; this.app.saveSettings(); toast('Finger drawing ' + (this.app.settings.fingerDraw ? 'on' : 'off')); }
       if (m === 'clearpage') { if (await confirmDialog('Clear page', 'Remove all ink and objects from this page?', 'Clear')) this.clearPage(); }
       if (m === 'delpage') this.deletePage(this.currentPageIndex());
@@ -809,7 +807,6 @@ export class Editor {
     this.selEl.innerHTML = `<div class="h nw"></div><div class="h ne"></div><div class="h sw"></div><div class="h se"></div>
       <div class="selbar">
         <button data-s="copy" title="Duplicate">${icon('copy')}</button>
-        <button data-s="ocr" title="Convert to text">${icon('ocr')}</button>
         <button data-s="share" title="Share">${icon('share')}</button>
         <button data-s="del" title="Delete">${icon('trash')}</button>
       </div>`;
@@ -818,7 +815,6 @@ export class Editor {
       const k = b2.dataset.s;
       if (k === 'del') this.deleteSelection();
       if (k === 'copy') this.duplicateSelection();
-      if (k === 'ocr') this.ocrSelection();
       if (k === 'share') this.shareSelection();
     });
     this.selEl.querySelectorAll('.h').forEach(h => h.addEventListener('pointerdown', ev => {
@@ -1025,54 +1021,6 @@ export class Editor {
       const s = Math.floor((Date.now() - t0) / 1000);
       b.querySelector('span').textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
     }, 500);
-  }
-
-  /* ================= OCR ================= */
-
-  async ocrSelection() {
-    const s = this.selection; if (!s) return;
-    const b = s.bounds, pad = 16;
-    const w = Math.max(40, b.x1 - b.x0 + pad * 2), h = Math.max(40, b.y1 - b.y0 + pad * 2);
-    const sc = Math.min(3, 1600 / Math.max(w, h));
-    const c = document.createElement('canvas');
-    c.width = Math.round(w * sc); c.height = Math.round(h * sc);
-    const ctx = c.getContext('2d');
-    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
-    ctx.setTransform(sc, 0, 0, sc, -(b.x0 - pad) * sc, -(b.y0 - pad) * sc);
-    for (const o of s.objs) { const img = this._imgCache?.get(o.blobId); if (img) ctx.drawImage(img, o.x, o.y, o.w, o.h); }
-    for (const st of s.strokes) Ink.drawStroke(ctx, st);
-    this.runOCR(c, s.page, b);
-  }
-
-  async ocrPage() {
-    const page = this.pages[this.currentPageIndex()];
-    const c = await this.renderPageToCanvas(page, 1.6, true);
-    this.runOCR(c, page, null);
-  }
-
-  async runOCR(canvas, page, bounds) {
-    const m = modal({ title: 'Converting handwriting', body: '<p class="muted">Reading your writing…</p>' });
-    try {
-      const text = await Drive.ocr(canvas);
-      m.close();
-      if (!text) return toast('No text was recognised', 'error');
-      const ta = el(`<textarea class="field ta" rows="10"></textarea>`);
-      ta.value = text;
-      modal({
-        title: 'Handwriting → text', body: ta, wide: true,
-        actions: [
-          { label: 'Copy', onClick: () => { navigator.clipboard?.writeText(ta.value); toast('Copied'); return false; } },
-          { label: 'Insert as text box', primary: true, onClick: () => {
-              const o = { id: S.uid(), type: 'text', x: bounds ? bounds.x0 : 90, y: bounds ? bounds.y1 + 20 : 120,
-                          w: page.w - 180, size: 26, color: '#1b1f27', text: ta.value };
-              page.objects.push(o); S.savePage(page); this.syncOverlay(page); this.app.markDirty();
-            } }
-        ]
-      });
-    } catch (e) {
-      m.close();
-      toast(e.message, 'error');
-    }
   }
 
   /* ================= export & share ================= */

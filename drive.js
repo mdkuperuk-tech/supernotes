@@ -1,6 +1,6 @@
-/* drive.js — Google Drive sync + Cloud Vision handwriting OCR.
+/* drive.js — Google Drive sync.
    Uses Google Identity Services with the narrow `drive.file` scope, so the app
-   can only ever see files it created itself. */
+   can only ever see files it created itself. No paid service is ever called. */
 
 import * as S from './store.js';
 
@@ -8,7 +8,7 @@ const SCOPE = 'https://www.googleapis.com/auth/drive.file';
 const FOLDER = 'SuperNotes';
 
 export const state = {
-  clientId: '', visionKey: '', folderId: '',
+  clientId: '', folderId: '',
   token: '', tokenExp: 0,
   signedIn: false, email: '',
   status: 'off',           // off | ready | syncing | synced | error | offline
@@ -24,21 +24,27 @@ function set(patch) { Object.assign(state, patch); emit(); }
 
 export async function init() {
   state.clientId = (await S.setting('gdrive.clientId')) || '';
-  state.visionKey = (await S.setting('gdrive.visionKey')) || '';
   state.folderId = (await S.setting('gdrive.folderId')) || '';
-  if (state.clientId) {
-    await loadGIS();
-    set({ status: 'ready', message: 'Not connected' });
-    // try a silent sign-in if the user has connected before
-    if (await S.setting('gdrive.connected')) signIn(true).catch(() => {});
+  if (!state.clientId) { set({ status: 'off', message: 'Drive not set up' }); return; }
+
+  // Reuse a cached access token so a reload inside the hour resumes without re-consent.
+  const cached = await S.setting('gdrive.token');
+  if (cached && cached.exp > Date.now() + 60000) {
+    set({ token: cached.t, tokenExp: cached.exp, signedIn: true, status: 'synced', message: 'Connected' });
   } else {
-    set({ status: 'off', message: 'Drive not set up' });
+    set({ status: 'ready', message: 'Not connected' });
+  }
+
+  try { await loadGIS(); } catch { set({ status: 'offline', message: 'Offline — will sync later' }); return; }
+
+  // If there is no live token, try to renew quietly. This never blocks the UI.
+  if (!state.signedIn && await S.setting('gdrive.connected')) {
+    signIn(true).catch(() => set({ status: 'ready', message: 'Tap to reconnect Drive' }));
   }
 }
 
-export async function saveConfig({ clientId, visionKey }) {
+export async function saveConfig({ clientId }) {
   if (clientId !== undefined) { state.clientId = clientId.trim(); await S.setting('gdrive.clientId', state.clientId); }
-  if (visionKey !== undefined) { state.visionKey = visionKey.trim(); await S.setting('gdrive.visionKey', state.visionKey); }
   if (state.clientId) { await loadGIS(); set({ status: 'ready', message: 'Ready to connect' }); }
   else set({ status: 'off', message: 'Drive not set up' });
 }
@@ -59,40 +65,68 @@ function loadGIS() {
 }
 
 let tokenClient = null;
+let inFlight = null;
 
+/**
+ * Ask Google for an access token.
+ * `silent` uses prompt:'' — no UI when Google can renew on its own. That path can
+ * simply never call back (blocked popup, no third-party cookies), so every attempt
+ * is raced against a timeout: a hung renewal must degrade to "reconnect", never hang.
+ */
 export function signIn(silent = false) {
-  return new Promise(async (res, rej) => {
+  if (inFlight) return inFlight;
+  inFlight = new Promise(async (res, rej) => {
     if (!state.clientId) return rej(new Error('Add your Google client ID in Settings first.'));
     try { await loadGIS(); } catch (e) { return rej(e); }
+
+    let settled = false;
+    const finish = (fn, v) => { if (!settled) { settled = true; fn(v); } };
+
     if (!tokenClient) {
       tokenClient = google.accounts.oauth2.initTokenClient({
-        client_id: state.clientId,
-        scope: SCOPE,
-        callback: () => {}
+        client_id: state.clientId, scope: SCOPE, callback: () => {}
       });
     }
     tokenClient.callback = async resp => {
-      if (resp.error) { set({ status: 'error', message: resp.error }); return rej(new Error(resp.error)); }
-      set({ token: resp.access_token, tokenExp: Date.now() + (resp.expires_in - 90) * 1000, signedIn: true, status: 'synced', message: 'Connected' });
+      if (resp.error) {
+        set({ status: 'error', message: resp.error });
+        return finish(rej, new Error(resp.error));
+      }
+      const exp = Date.now() + ((resp.expires_in || 3600) - 120) * 1000;
+      set({ token: resp.access_token, tokenExp: exp, signedIn: true, status: 'synced', message: 'Connected' });
       await S.setting('gdrive.connected', true);
-      try { await ensureFolder(); } catch (e) { /* surfaced on first sync */ }
-      res(true);
+      await S.setting('gdrive.token', { t: resp.access_token, exp });
+      try { await ensureFolder(); } catch {}
+      finish(res, true);
     };
-    try {
-      tokenClient.requestAccessToken({ prompt: silent ? '' : 'consent' });
-    } catch (e) { rej(e); }
-  });
+    tokenClient.error_callback = err => {
+      set({ status: 'ready', message: silent ? 'Tap to reconnect Drive' : (err?.type || 'Sign-in cancelled') });
+      finish(rej, new Error(err?.type || 'Sign-in did not complete'));
+    };
+
+    setTimeout(() => {
+      if (settled) return;
+      set({ status: 'ready', message: 'Tap to reconnect Drive' });
+      finish(rej, new Error('Google sign-in timed out — tap Connect Drive to retry.'));
+    }, silent ? 8000 : 120000);
+
+    try { tokenClient.requestAccessToken({ prompt: silent ? '' : 'consent' }); }
+    catch (e) { finish(rej, e); }
+  }).finally(() => { inFlight = null; });
+  return inFlight;
 }
 
 export async function signOut() {
   if (state.token && window.google?.accounts?.oauth2) google.accounts.oauth2.revoke(state.token, () => {});
   await S.setting('gdrive.connected', false);
-  set({ token: '', signedIn: false, status: 'ready', message: 'Disconnected' });
+  await S.setting('gdrive.token', null);
+  set({ token: '', tokenExp: 0, signedIn: false, status: 'ready', message: 'Disconnected' });
 }
 
 async function token() {
   if (state.token && Date.now() < state.tokenExp) return state.token;
   await signIn(true);
+  if (!state.token) throw new Error('Google session expired — tap Connect Drive.');
   return state.token;
 }
 
@@ -101,7 +135,12 @@ async function token() {
 async function api(url, opts = {}) {
   const t = await token();
   const r = await fetch(url, { ...opts, headers: { Authorization: 'Bearer ' + t, ...(opts.headers || {}) } });
-  if (r.status === 401) { state.token = ''; throw new Error('Google session expired — reconnect in Settings.'); }
+  if (r.status === 401) {
+    state.token = ''; state.tokenExp = 0;
+    await S.setting('gdrive.token', null);
+    set({ signedIn: false, status: 'ready', message: 'Tap to reconnect Drive' });
+    throw new Error('Google session expired — tap Connect Drive.');
+  }
   if (!r.ok) throw new Error(`Drive ${r.status}: ${(await r.text()).slice(0, 200)}`);
   return r;
 }
@@ -227,25 +266,8 @@ export async function uploadFile(blob, name, mime) {
 
 const sanitize = s => String(s).replace(/[\\/:*?"<>|]/g, '-').slice(0, 90).trim() || 'Notebook';
 
-/* ---------- handwriting → text (Google Cloud Vision) ---------- */
-
-export async function ocr(canvas) {
-  if (!state.visionKey) throw new Error('Add a Cloud Vision API key in Settings to convert handwriting to text.');
-  const dataURL = canvas.toDataURL('image/png');
-  const b64 = dataURL.split(',')[1];
-  const r = await fetch(`https://vision.googleapis.com/v1/images:annotate?key=${encodeURIComponent(state.visionKey)}`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      requests: [{
-        image: { content: b64 },
-        features: [{ type: 'DOCUMENT_TEXT_DETECTION' }],
-        imageContext: { languageHints: ['en', 'es'] }
-      }]
-    })
-  });
-  const j = await r.json();
-  if (j.error) throw new Error(j.error.message);
-  const resp = j.responses?.[0];
-  if (resp?.error) throw new Error(resp.error.message);
-  return (resp?.fullTextAnnotation?.text || '').trim();
-}
+/* Handwriting-to-text is intentionally not implemented.
+   Every browser-reachable engine (Google Cloud Vision, MyScript, Azure Read) is a paid
+   cloud service, and this app is built to cost nothing to run. On iPad, write with the
+   Apple Pencil directly into a text box instead: iPadOS Scribble converts it on-device,
+   free, with no network call and no account. */
