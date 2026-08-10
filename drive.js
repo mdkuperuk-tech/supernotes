@@ -7,6 +7,13 @@ import * as S from './store.js';
 const SCOPE = 'https://www.googleapis.com/auth/drive.file';
 const FOLDER = 'SuperNotes';
 
+/* This app's own Google OAuth client.
+   A browser client ID is public by design — it travels in every sign-in request the page
+   makes and cannot be hidden. What actually protects it is the authorised-JavaScript-origin
+   restriction on the Google project, which only accepts it from this site. Baking it in is
+   what lets a brand-new device sync without being configured by hand. */
+const DEFAULT_CLIENT_ID = '535908975338-epcfdu9dinndd9velufgt2cvjmp9t4kh.apps.googleusercontent.com';
+
 export const state = {
   clientId: '', folderId: '',
   token: '', tokenExp: 0,
@@ -23,7 +30,7 @@ function set(patch) { Object.assign(state, patch); emit(); }
 /* ---------- setup ---------- */
 
 export async function init() {
-  state.clientId = (await S.setting('gdrive.clientId')) || '';
+  state.clientId = (await S.setting('gdrive.clientId')) || DEFAULT_CLIENT_ID;
   state.folderId = (await S.setting('gdrive.folderId')) || '';
   if (!state.clientId) { set({ status: 'off', message: 'Drive not set up' }); return; }
 
@@ -44,7 +51,11 @@ export async function init() {
 }
 
 export async function saveConfig({ clientId }) {
-  if (clientId !== undefined) { state.clientId = clientId.trim(); await S.setting('gdrive.clientId', state.clientId); }
+  if (clientId !== undefined) {
+    const v = clientId.trim();
+    state.clientId = v || DEFAULT_CLIENT_ID;
+    await S.setting('gdrive.clientId', v);
+  }
   if (state.clientId) { await loadGIS(); set({ status: 'ready', message: 'Ready to connect' }); }
   else set({ status: 'off', message: 'Drive not set up' });
 }
