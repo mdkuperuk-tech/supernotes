@@ -48,7 +48,7 @@ export class Editor {
 
   build() {
     this.root.innerHTML = `
-      <div class="ed">
+      <div class="ed" data-rail="${this.app.settings.railPos || 'left'}">
         <div class="topbar">
           <button class="icon-btn" data-a="back" title="Library">${icon('back')}</button>
           <div class="title-wrap"><button class="title-btn" data-a="rename"></button>
@@ -271,6 +271,7 @@ export class Editor {
 
   menuPop(btn) {
     const items = [
+      ['rail', 'Move the toolbar', 'grid'],
       ['paper', 'Change paper', 'grid'],
       ['cover', 'Change cover', 'book'],
       ['fingerdraw', this.app.settings.fingerDraw ? 'Finger drawing: ON' : 'Finger drawing: off', 'hand'],
@@ -285,6 +286,7 @@ export class Editor {
       const b = e.target.closest('[data-m]'); if (!b) return;
       p.remove();
       const m = b.dataset.m;
+      if (m === 'rail') this.railPicker(btn);
       if (m === 'paper') this.paperPicker();
       if (m === 'cover') this.app.coverPicker(this.nb, () => {});
       if (m === 'fingerdraw') { this.app.settings.fingerDraw = !this.app.settings.fingerDraw; this.app.saveSettings(); toast('Finger drawing ' + (this.app.settings.fingerDraw ? 'on' : 'off')); }
@@ -293,6 +295,31 @@ export class Editor {
       if (m === 'newday') this.newDatedPage();
       if (m === 'carry') this.carryForward();
     });
+  }
+
+  railPicker() {
+    const cur = this.app.settings.railPos || 'left';
+    const opts = [['left', 'Left edge'], ['right', 'Right edge'], ['top', 'Across the top'], ['bottom', 'Across the bottom']];
+    const body = el(`<div>
+      <p class="muted">Where the pen, eraser and tool buttons sit while you write.</p>
+      <div class="railopts">${opts.map(([id, label]) =>
+        `<button class="railopt ${cur === id ? 'on' : ''}" data-r="${id}"><span class="railmini ${id}"><i></i><i></i><i></i></span>${label}</button>`).join('')}</div>
+      <label class="row"><input type="checkbox" data-tf ${this.app.settings.twoFingerSwap ? 'checked' : ''}>
+        Two-finger tap swaps pen and eraser</label>
+      <p class="muted small">Leave this off if you rest your hand on the screen — a palm can read as two fingers.</p>
+    </div>`);
+    const m = modal({ title: 'Toolbar', body, actions: [{ label: 'Done', primary: true }] });
+    body.addEventListener('click', e => {
+      const b = e.target.closest('[data-r]'); if (!b) return;
+      this.app.settings.railPos = b.dataset.r;
+      this.app.saveSettings();
+      this.root.querySelector('.ed').dataset.rail = b.dataset.r;
+      body.querySelectorAll('.railopt').forEach(x => x.classList.toggle('on', x === b));
+    });
+    body.querySelector('[data-tf]').onchange = ev => {
+      this.app.settings.twoFingerSwap = ev.target.checked;
+      this.app.saveSettings();
+    };
   }
 
   paperPicker() {
@@ -677,8 +704,23 @@ export class Editor {
     return 'draw';
   }
 
+  /**
+   * True when a touch contact should be ignored outright.
+   * Two cases: a resting palm while the pencil is in use, and a contact whose
+   * reported area is far too big to be a fingertip (a palm or forearm).
+   */
+  isPalm(e) {
+    if (e.pointerType !== 'touch') return false;
+    if (this._penDown) return true;
+    if (performance.now() - (this._lastPenAt || -1e9) < 900) return true;
+    if ((e.width || 0) > 45 || (e.height || 0) > 45) return true;
+    return false;
+  }
+
   onDown(e) {
     if (e.target.closest('.tbox, .apin, .tick, .glass, .selframe')) return;
+    if (e.pointerType === 'pen') { this._penDown = true; this._lastPenAt = performance.now(); }
+    if (this.isPalm(e)) return;
     this._pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
 
     if (this._pointers.size === 2) { this.cancelDraw(); this.startPinch(); return; }
@@ -698,18 +740,20 @@ export class Editor {
 
     if (tool.name === 'text') { this.addTextBox(hit); return; }
     if (tool.name === 'eraser') {
-      this._erase = { page: hit.page, before: hit.page.strokes.slice(), beforeObjs: hit.page.objects.slice(), changed: false };
+      this._erase = { id: e.pointerId, page: hit.page, before: hit.page.strokes.slice(), beforeObjs: hit.page.objects.slice(), changed: false };
       this.eraseAt(hit); return;
     }
-    if (tool.name === 'lasso') { this._lasso = { page: hit.page, pts: [hit.x, hit.y], x0: hit.x, y0: hit.y, far: 0 }; return; }
+    if (tool.name === 'lasso') { this._lasso = { id: e.pointerId, page: hit.page, pts: [hit.x, hit.y], x0: hit.x, y0: hit.y, far: 0 }; return; }
 
     const draw = new Ink.StrokeCapture(tool.name === 'shapes' ? 'pen' : tool.name, tool.color, tool.size);
     draw.add(hit.x, hit.y, e.pressure, performance.now());
-    this._draw = { cap: draw, page: hit.page, lastMove: performance.now(), forceShape: tool.name === 'shapes' };
+    this._draw = { id: e.pointerId, cap: draw, page: hit.page, lastMove: performance.now(), forceShape: tool.name === 'shapes' };
     this.paintLive();
   }
 
   onMove(e) {
+    if (e.pointerType === 'pen') this._lastPenAt = performance.now();
+    if (this.isPalm(e) && !this._pointers.has(e.pointerId)) return;
     if (this._pointers.has(e.pointerId)) {
       const p = this._pointers.get(e.pointerId); p.x = e.clientX; p.y = e.clientY;
     }
@@ -722,6 +766,9 @@ export class Editor {
     }
     if (this._moveSel) { this.moveSelection(e); return; }
 
+    const owner = this._draw?.id ?? this._erase?.id ?? this._lasso?.id;
+    if (owner != null && e.pointerId !== owner) return;
+
     const hit = this.toPage(e.clientX, e.clientY);
     if (this._erase) { this.eraseAt(hit); return; }
     if (this._lasso) {
@@ -731,7 +778,10 @@ export class Editor {
     }
     if (!this._draw) return;
 
-    const evts = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+    // Coalesced events give us the full-rate pencil samples between frames.
+    // Some events report none — fall back to the event itself so no sample is lost.
+    let evts = e.getCoalescedEvents ? e.getCoalescedEvents() : null;
+    if (!evts || !evts.length) evts = [e];
     let moved = false;
     for (const ev of evts) {
       const h = this.toPage(ev.clientX, ev.clientY);
@@ -742,12 +792,14 @@ export class Editor {
   }
 
   onUp(e) {
+    if (e.pointerType === 'pen') { this._penDown = false; this._lastPenAt = performance.now(); }
     this._pointers.delete(e.pointerId);
     if (this._pointers.size < 2 && this._pinch) {
       const tt = this._twoTap;
       this._pinch = null; this._twoTap = null;
       // A quick two-finger tap that neither zoomed nor panned = swap pen ⇄ eraser.
-      if (tt && performance.now() - tt.t0 < 320 && tt.moved < 16 && Math.abs(this.zoom / tt.zoom0 - 1) < 0.04) {
+      if (this.app.settings.twoFingerSwap && tt && !tt.palm &&
+          performance.now() - tt.t0 < 320 && tt.moved < 16 && Math.abs(this.zoom / tt.zoom0 - 1) < 0.04) {
         this._pointers.clear();
         this.quickSwap();
         return;
@@ -755,6 +807,11 @@ export class Editor {
     }
     if (this._pan && this._pointers.size === 0) { this._pan = null; this.updatePageNo(); return; }
     if (this._moveSel) { this.endMoveSelection(); return; }
+
+    // A resting hand lifting off must not end the stroke the pencil is still drawing.
+    const owner = this._draw?.id ?? this._erase?.id ?? this._lasso?.id;
+    if (owner != null && e.pointerId !== owner) return;
+
     if (this._erase) { this.commitErase(); return; }
     if (this._lasso) { this.commitLasso(); return; }
     if (!this._draw) return;
@@ -789,7 +846,13 @@ export class Editor {
   startPinch() {
     const [a, b] = [...this._pointers.values()];
     const r = this.vp.getBoundingClientRect();
-    this._twoTap = { t0: performance.now(), cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2, zoom0: this.zoom, moved: 0 };
+    // Two contacts sitting far apart, or arriving while the pencil is live, are a
+    // hand resting on the glass — not a deliberate two-finger tap.
+    const spread = Math.hypot(a.x - b.x, a.y - b.y);
+    this._twoTap = {
+      t0: performance.now(), cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2, zoom0: this.zoom, moved: 0,
+      palm: spread > 260 || this._penDown || performance.now() - (this._lastPenAt || -1e9) < 900
+    };
     this._pinch = {
       d: Math.hypot(a.x - b.x, a.y - b.y),
       cx: (a.x + b.x) / 2 - r.left, cy: (a.y + b.y) / 2 - r.top,

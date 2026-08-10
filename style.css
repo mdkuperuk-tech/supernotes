@@ -105,19 +105,24 @@ button.ghost{background:transparent;border-color:transparent}
 .sync-btn[data-state="offline"] .dot{background:var(--warn)}
 @keyframes pulse{50%{opacity:.3}}
 
-.toolrail{position:absolute;left:10px;top:50%;transform:translateY(-50%);z-index:4;
-  display:flex;flex-direction:column;gap:3px;padding:6px;background:var(--panel);
-  border:1px solid var(--line);border-radius:16px;box-shadow:var(--sh)}
+.toolrail{position:absolute;z-index:4;display:flex;gap:3px;padding:6px;background:var(--panel);
+  border:1px solid var(--line);border-radius:16px;box-shadow:var(--sh);
+  max-width:calc(100vw - 20px);max-height:calc(100% - 20px);overflow:auto;
+  scrollbar-width:none;-webkit-overflow-scrolling:touch}
+.toolrail::-webkit-scrollbar{display:none}
+.ed[data-rail="left"]  .toolrail{left:10px;top:50%;transform:translateY(-50%);flex-direction:column}
+.ed[data-rail="right"] .toolrail{right:10px;top:50%;transform:translateY(-50%);flex-direction:column}
+.ed[data-rail="top"]   .toolrail{left:50%;top:10px;transform:translateX(-50%);flex-direction:row}
+.ed[data-rail="bottom"] .toolrail{left:50%;bottom:calc(10px + var(--safe-b));transform:translateX(-50%);flex-direction:row}
+.ed[data-rail="top"] .rail-sep,
+.ed[data-rail="bottom"] .rail-sep{width:1px;height:auto;margin:6px 4px}
 .tool{padding:9px;border:none;background:transparent;border-radius:11px}
 .tool:hover{background:var(--panel2)}
 .tool.on{background:var(--accent);color:#fff}
 .rail-sep{height:1px;background:var(--line);margin:4px 6px}
 .tool.swatch i{width:20px;height:20px;border-radius:50%;display:block;border:2px solid rgba(255,255,255,.35)}
 .sizedot{background:currentColor;border-radius:50%;display:block}
-@media(max-width:760px){
-  .toolrail{left:50%;top:auto;bottom:calc(56px + var(--safe-b));transform:translateX(-50%);flex-direction:row;overflow-x:auto;max-width:94vw}
-  .rail-sep{width:1px;height:auto;margin:6px 4px}
-}
+
 
 .viewport{position:relative;flex:1;overflow:hidden;background:
   radial-gradient(1200px 600px at 50% -10%, rgba(76,141,255,.07), transparent 70%), var(--bg2);
@@ -287,3 +292,26 @@ textarea.ta{min-height:220px;font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,mon
 .ersize i{display:block;border-radius:50%;border:1.6px solid var(--muted);background:rgba(160,180,210,.18)}
 .ersize.on{background:rgba(76,141,255,.18)}
 .ersize.on i{border-color:var(--accent)}
+
+/* ---------- toolbar position picker ---------- */
+.railopts{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:14px 0}
+.railopt{flex-direction:column;gap:9px;padding:14px 10px;font-size:13px}
+.railopt.on{border-color:var(--accent);background:rgba(76,141,255,.09)}
+.railmini{position:relative;display:block;width:74px;height:52px;border-radius:7px;
+  border:1.5px solid var(--line);background:var(--panel2)}
+.railmini i{position:absolute;display:block;background:var(--accent);border-radius:2px}
+.railmini.left i,.railmini.right i{width:7px;height:7px}
+.railmini.top i,.railmini.bottom i{width:7px;height:7px}
+.railmini.left i:nth-child(1){left:6px;top:16px}
+.railmini.left i:nth-child(2){left:6px;top:26px}
+.railmini.left i:nth-child(3){left:6px;top:36px}
+.railmini.right i:nth-child(1){right:6px;top:16px}
+.railmini.right i:nth-child(2){right:6px;top:26px}
+.railmini.right i:nth-child(3){right:6px;top:36px}
+.railmini.top i:nth-child(1){top:6px;left:26px}
+.railmini.top i:nth-child(2){top:6px;left:36px}
+.railmini.top i:nth-child(3){top:6px;left:46px}
+.railmini.bottom i:nth-child(1){bottom:6px;left:26px}
+.railmini.bottom i:nth-child(2){bottom:6px;left:36px}
+.railmini.bottom i:nth-child(3){bottom:6px;left:46px}
+.muted.small{font-size:12px;margin-top:-2px}

@@ -11,7 +11,7 @@ class App {
   constructor() {
     this.root = document.getElementById('app');
     this.tool = { name: 'pen', color: '#1b1f27', size: 3, prevTool: 'pen', pen: 'pen', eraserSize: 30, eraseMode: 'precise' };
-    this.settings = { fingerDraw: false, autoSync: true, pdfCover: true };
+    this.settings = { fingerDraw: false, autoSync: true, pdfCover: true, railPos: 'left', twoFingerSwap: false };
     this.editor = null;
   }
 
@@ -315,6 +315,8 @@ class App {
         <h3>Drawing</h3>
         <label class="row"><input type="checkbox" data-fd ${this.settings.fingerDraw ? 'checked' : ''}> Draw with finger (off = finger pans, pencil draws)</label>
         <label class="row"><input type="checkbox" data-pc ${this.settings.pdfCover !== false ? 'checked' : ''}> Include the cover as page 1 of exported PDFs</label>
+        <label class="row"><input type="checkbox" data-tf ${this.settings.twoFingerSwap ? 'checked' : ''}> Two-finger tap swaps pen and eraser</label>
+        <p class="muted small">Off by default: a palm resting on the screen can register as two fingers and flip you to the eraser mid-sentence. The pencil is always rejected-safe either way.</p>
       </section>
       <section>
         <h3>Storage</h3>
@@ -346,6 +348,7 @@ class App {
 
     body.querySelector('[data-fd]').onchange = e => { this.settings.fingerDraw = e.target.checked; this.saveSettings(); };
     body.querySelector('[data-pc]').onchange = e => { this.settings.pdfCover = e.target.checked; this.saveSettings(); };
+    body.querySelector('[data-tf]').onchange = e => { this.settings.twoFingerSwap = e.target.checked; this.saveSettings(); };
 
     body.addEventListener('click', async e => {
       const b = e.target.closest('[data-x]'); if (!b) return;
