@@ -22,7 +22,8 @@ export const PAPER_KINDS = [
   { id: 'dot',     label: 'Dot grid' },
   { id: 'iso',     label: 'Isometric' },
   { id: 'cornell', label: 'Cornell' },
-  { id: 'planner', label: 'Day planner' },
+  { id: 'planner', label: 'Hour planner' },
+  { id: 'daily',   label: 'Daily planner' },
   { id: 'music',   label: 'Music staff' },
   { id: 'storyboard', label: 'Storyboard' },
   { id: 'journal', label: 'Journal' },
@@ -53,6 +54,7 @@ export function drawPaper(ctx, page) {
     case 'storyboard': storyboard(ctx, w, h, c); break;
     case 'journal': journalPaper(ctx, w, h, c, page); break;
     case 'todo':    todoPaper(ctx, w, h, c, page); break;
+    case 'daily':   dailyPaper(ctx, w, h, c, page); break;
     default: break;
   }
   ctx.restore();
@@ -211,6 +213,129 @@ function panel(ctx, x, y, w, h, title, c, rows) {
     roundRect(ctx, x + 20, ry - 12, 24, 24, 6); ctx.stroke();
     line(ctx, x + 58, ry + 16, x + w - 20, ry + 16, fade(c.line, 0.85), 1.1);
   }
+}
+
+/* ---- full daily planner ---- */
+export const DAILY = (() => {
+  const m = 68, gap = 26, W = 1240, H = 1754;
+  const colW = 566, rx = m + colW + gap, rw = W - m - rx;
+  return {
+    m, W, H, colW, rx, rw,
+    head:     { x: m,  y: 56,   w: W - m * 2, h: 100 },
+    personal: { x: m,  y: 176,  w: colW, h: 214, rows: 3 },
+    business: { x: m,  y: 404,  w: colW, h: 214, rows: 3 },
+    else:     { x: m,  y: 632,  w: colW, h: 320 },
+    remember: { x: m,  y: 966,  w: colW, h: 320 },
+    water:    { x: rx, y: 176,  w: rw,   h: 118, count: 8 },
+    meals:    { x: rx, y: 308,  w: rw,   h: 268, labels: ['Breakfast', 'Lunch', 'Dinner', 'Snacks'] },
+    sched:    { x: rx, y: 590,  w: rw,   h: 696, timeW: 118 },
+    notes:    { x: m,  y: 1310, w: W - m * 2, h: 380 }
+  };
+})();
+
+function dailyPaper(ctx, w, h, c, page) {
+  const L = DAILY, rowH = 54;
+
+  ctx.fillStyle = fade(c.accent, 0.10);
+  roundRect(ctx, L.head.x, L.head.y, L.head.w, L.head.h, 16); ctx.fill();
+  ctx.fillStyle = c.text;
+  ctx.font = '700 20px ui-sans-serif, system-ui, sans-serif'; ctx.textBaseline = 'alphabetic';
+  ctx.fillText('DAILY PLANNER', L.head.x + 26, L.head.y + 36);
+  ctx.font = '700 34px ui-serif, Georgia, serif';
+  ctx.fillText(page?.meta?.dateLabel || '', L.head.x + 26, L.head.y + 80);
+
+  panel(ctx, L.personal.x, L.personal.y, L.personal.w, L.personal.h, 'TOP 3 — PERSONAL', c, 3);
+  panel(ctx, L.business.x, L.business.y, L.business.w, L.business.h, 'TOP 3 — BUSINESS', c, 3);
+  panel(ctx, L.else.x, L.else.y, L.else.w, L.else.h, 'EVERYTHING ELSE', c, Math.floor((L.else.h - 74) / rowH));
+
+  /* remember today — plain ruled, no boxes */
+  shell(ctx, L.remember.x, L.remember.y, L.remember.w, L.remember.h, 'REMEMBER TODAY', c);
+  for (let i = 0; ; i++) {
+    const y = L.remember.y + 88 + i * 46;
+    if (y > L.remember.y + L.remember.h - 18) break;
+    line(ctx, L.remember.x + 20, y, L.remember.x + L.remember.w - 20, y, fade(c.line, 0.85), 1.1);
+  }
+
+  /* water */
+  shell(ctx, L.water.x, L.water.y, L.water.w, L.water.h, 'WATER', c);
+  for (const g of waterGlasses()) glass(ctx, g.x, g.y, g.s, c);
+
+  /* meals */
+  shell(ctx, L.meals.x, L.meals.y, L.meals.w, L.meals.h, 'MEALS', c);
+  L.meals.labels.forEach((lab, i) => {
+    const y = L.meals.y + 74 + i * 52;
+    ctx.strokeStyle = c.line; ctx.lineWidth = 1.5;
+    roundRect(ctx, L.meals.x + 18, y - 12, 22, 22, 6); ctx.stroke();
+    ctx.fillStyle = fade(c.text, 0.95);
+    ctx.font = '600 15px ui-sans-serif, system-ui, sans-serif'; ctx.textBaseline = 'middle';
+    ctx.fillText(lab, L.meals.x + 52, y);
+    line(ctx, L.meals.x + 148, y + 14, L.meals.x + L.meals.w - 18, y + 14, fade(c.line, 0.8), 1.1);
+  });
+
+  /* open schedule — you write the time */
+  shell(ctx, L.sched.x, L.sched.y, L.sched.w, L.sched.h, 'SCHEDULE', c);
+  ctx.fillStyle = fade(c.text, 0.55);
+  ctx.font = '600 11px ui-sans-serif, system-ui, sans-serif'; ctx.textBaseline = 'alphabetic';
+  ctx.fillText('TIME', L.sched.x + 20, L.sched.y + 62);
+  ctx.fillText('WHAT', L.sched.x + L.sched.timeW + 30, L.sched.y + 62);
+  line(ctx, L.sched.x + L.sched.timeW, L.sched.y + 46, L.sched.x + L.sched.timeW, L.sched.y + L.sched.h - 12, fade(c.accent, 0.45), 1.4);
+  for (let i = 0; ; i++) {
+    const y = L.sched.y + 118 + i * 52;
+    if (y > L.sched.y + L.sched.h - 14) break;
+    line(ctx, L.sched.x + 14, y, L.sched.x + L.sched.w - 16, y, fade(c.line, 0.8), 1.1);
+  }
+
+  /* notes */
+  shell(ctx, L.notes.x, L.notes.y, L.notes.w, L.notes.h, 'NOTES', c);
+  for (let i = 0; ; i++) {
+    const y = L.notes.y + 88 + i * 46;
+    if (y > L.notes.y + L.notes.h - 16) break;
+    line(ctx, L.notes.x + 20, y, L.notes.x + L.notes.w - 20, y, fade(c.line, 0.8), 1.1);
+  }
+}
+
+/* outlined panel with a title bar and no rows */
+function shell(ctx, x, y, w, h, title, c) {
+  ctx.strokeStyle = fade(c.line, 0.9); ctx.lineWidth = 1.4;
+  roundRect(ctx, x, y, w, h, 14); ctx.stroke();
+  ctx.fillStyle = fade(c.accent, 0.07);
+  roundRect(ctx, x, y, w, 46, 14); ctx.fill();
+  ctx.fillStyle = c.text; ctx.font = '700 15px ui-sans-serif, system-ui, sans-serif'; ctx.textBaseline = 'middle';
+  ctx.fillText(title, x + 18, y + 24);
+}
+
+function glass(ctx, x, y, s, c) {
+  ctx.strokeStyle = c.bg === '#1d2128' ? 'rgba(120,180,235,.8)' : 'rgba(47,127,209,.55)';
+  ctx.lineWidth = 1.8; ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(x + s * 0.16, y);
+  ctx.lineTo(x + s * 0.84, y);
+  ctx.lineTo(x + s * 0.70, y + s);
+  ctx.lineTo(x + s * 0.30, y + s);
+  ctx.closePath(); ctx.stroke();
+}
+
+function waterGlasses() {
+  const L = DAILY, n = L.water.count, s = 40;
+  const pad = 20, span = L.water.w - pad * 2;
+  const step = span / n;
+  const out = [];
+  for (let i = 0; i < n; i++) out.push({ key: 'w' + i, x: L.water.x + pad + i * step + (step - s * 0.9) / 2, y: L.water.y + 62, s });
+  return out;
+}
+
+/** Tap targets for the daily planner, in page coordinates. */
+export function dailyTargets() {
+  const L = DAILY, rowH = 54;
+  const boxes = [];
+  const col = (p, prefix) => {
+    for (let i = 0; i < 3; i++) boxes.push({ key: prefix + i, x: p.x + 20, y: p.y + 74 + i * rowH - 12, s: 24 });
+  };
+  col(L.personal, 'p'); col(L.business, 'b');
+  const eRows = Math.floor((L.else.h - 74) / rowH);
+  for (let i = 0; i < eRows; i++) boxes.push({ key: 'e' + i, x: L.else.x + 20, y: L.else.y + 74 + i * rowH - 12, s: 24 });
+  L.meals.labels.forEach((_, i) => boxes.push({ key: 'm' + i, x: L.meals.x + 18, y: L.meals.y + 74 + i * 52 - 12, s: 22 }));
+  return { boxes, glasses: waterGlasses() };
 }
 
 function section(ctx, x, y, w, title, c) {

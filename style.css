@@ -64,7 +64,7 @@ button.ghost{background:transparent;border-color:transparent}
 .sync-chip[data-state="error"]{color:var(--danger);border-color:#4a2f2e}
 .sync-chip[data-state="syncing"]{color:var(--accent)}
 
-.quick{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:30px}
+.quick{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;margin-bottom:30px}
 @media(max-width:640px){.quick{grid-template-columns:1fr}}
 .qcard{justify-content:flex-start;padding:18px;border-radius:var(--r);text-align:left;gap:14px;background:var(--panel)}
 .qcard .ic{width:26px;height:26px;color:var(--accent)}
@@ -252,3 +252,38 @@ textarea.ta{min-height:220px;font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,mon
 .settings summary{cursor:pointer;font-size:13.5px;color:var(--accent)}
 .howto{margin:12px 0 0;padding-left:20px;font-size:13.5px;line-height:1.75;color:var(--muted)}
 .howto b{color:var(--txt)}
+
+/* ---------- pen picker ---------- */
+.pen-slot{position:relative}
+.pen-slot .caret{position:absolute;right:3px;bottom:3px;width:0;height:0;
+  border-left:5px solid transparent;border-bottom:5px solid currentColor;opacity:.55}
+.pens{display:flex;flex-direction:column;gap:2px;min-width:210px;max-height:min(70vh,520px);overflow:auto}
+.penopt{justify-content:flex-start;gap:10px;border:none;background:transparent;border-radius:10px;padding:5px 9px}
+.penopt:hover{background:var(--panel2)}
+.penopt.on{background:rgba(76,141,255,.16)}
+.penopt canvas{width:120px;height:34px;background:#fff;border-radius:7px;flex:none}
+.penopt span{font-size:13px}
+
+/* ---------- daily planner water glasses ---------- */
+.glass{position:absolute;padding:0;border:none;background:transparent;border-radius:4px}
+.glass.on{background:linear-gradient(180deg,rgba(47,127,209,.45),rgba(47,127,209,.85));
+  clip-path:polygon(19% 12%,81% 12%,70% 97%,30% 97%)}
+
+.quick{grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
+.qcard.p .ic{color:var(--ok)}
+
+/* paper thumbnails inside the new-notebook sheet */
+.newnb .paper-grid{max-height:270px;overflow:auto;padding:2px}
+.settings details summary{margin-bottom:6px}
+
+/* ---------- eraser popover ---------- */
+.eraserpop{min-width:250px}
+.pophead{font-size:11px;letter-spacing:.6px;text-transform:uppercase;color:var(--muted);padding:8px 10px 4px}
+.penopt.mode{flex-direction:column;align-items:flex-start;gap:1px;padding:8px 11px}
+.penopt.mode strong{font-size:13.5px;font-weight:600}
+.penopt.mode em{font-style:normal;font-size:11.5px;color:var(--muted)}
+.ersizes{display:flex;align-items:center;justify-content:space-between;gap:4px;padding:4px 8px 6px}
+.ersize{padding:5px;border:none;background:transparent;border-radius:9px;display:grid;place-items:center;min-width:46px;height:46px}
+.ersize i{display:block;border-radius:50%;border:1.6px solid var(--muted);background:rgba(160,180,210,.18)}
+.ersize.on{background:rgba(76,141,255,.18)}
+.ersize.on i{border-color:var(--accent)}

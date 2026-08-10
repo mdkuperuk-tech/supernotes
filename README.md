@@ -39,10 +39,15 @@ rename in **Site settings → Change site name**.
 
 ---
 
-## 2. Connect Google Drive (once, ~5 minutes)
+## 2. Connect Google Drive (one tap per device)
 
-Sync is off until you do this. The app still works fully offline without it — this step is what
-makes a notebook written on the iPad show up on the MacBook.
+The Google project is already set up and its OAuth client ID is compiled into `drive.js`, so
+**every device just opens Settings and taps Connect Google Drive** — nothing to paste, nothing
+to configure. A browser OAuth client ID is public by design; it travels in every sign-in request
+the page makes. What protects it is the authorised-JavaScript-origin restriction on the project,
+which only accepts it from this site.
+
+The steps below are only needed if you ever rebuild this against a different Google account.
 
 1. Go to [console.cloud.google.com/projectcreate](https://console.cloud.google.com/projectcreate),
    signed in as **mdkuper.uk@gmail.com**. Name the project **SuperNotes**. Create.
@@ -92,8 +97,9 @@ After installing, it opens full-screen with its own icon and runs with no connec
 
 ## What's in it
 
-**Writing.** Pen, fountain pen, pencil, marker and highlighter, each with five widths and a
-custom size slider. Apple Pencil pressure and tilt drive line weight; strokes are smoothed and
+**Writing.** Eleven pens — pen, ballpoint, gel, fountain, quill, brush, felt-tip, pencil, crayon,
+pastel and marker — plus a highlighter, each with five widths and a custom size slider. Tap the
+pen slot when it is already active to switch nib; each entry previews its own stroke. Apple Pencil pressure and tilt drive line weight; strokes are smoothed and
 tapered so handwriting comes out cleaner than raw input. Stroke eraser, lasso select with
 move/scale/duplicate/recolour, text boxes, photo import with resize handles, voice notes.
 
@@ -109,6 +115,24 @@ strip. Voice notes and photos drop straight onto the page.
 
 **Daily to-do.** Top 3 personal, top 3 business, everything else, with real tappable checkboxes.
 *Carry unfinished to a new day* copies the rows you didn't tick onto a fresh dated page.
+
+**Daily planner.** A fuller dated page: top-3 personal and business, everything else, an open
+schedule where you write your own times, eight tappable water glasses, a meals block for
+breakfast/lunch/dinner/snacks, *remember today*, and free notes. Ticks and filled glasses carry
+through to the exported PDF.
+
+**Erasing.** Three modes, on the eraser's own popover along with five sizes. *Precision* rubs out
+only the part you touch, splitting a line rather than deleting it. *Whole stroke* removes the
+entire line. *Stroke + photo* also removes photos. A ring shows the eraser's true size as you work.
+
+**Swapping to the eraser.** Apple exposes the Apple Pencil double-tap only to native apps
+(`UIPencilInteraction`); there is no JavaScript API for it, so no web app can catch that gesture.
+Two substitutes are wired instead: **tap the page with two fingers** to flip between your pen and
+the eraser and back, or press **E** on a keyboard. Tapping the eraser slot while it is already
+selected opens its size and mode picker, the same way the pen slot works.
+
+**Selecting.** With the Select tool, tap an image to grab it — move it, scale it from the corners,
+duplicate or delete it. Tap writing to grab the nearby ink, or draw a loop around a group.
 
 **Covers.** Sixteen designs — linen, leather, aurora, marble, arcs, minimal, blueprint, waves,
 terrazzo, dune, noir, folio, ridge, bloom, spine, sunset — in twelve colours. They're vector,

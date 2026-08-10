@@ -2,12 +2,29 @@
    No dependencies. Points are stored flat: [x,y,pressure, x,y,pressure, ...] */
 
 export const TOOLS = {
-  pen:        { label: 'Pen',         sizes: [1.2, 2, 3, 4.5, 7],  opacity: 1,    pressure: 0.55, velocity: 0.35, taper: true  },
-  fountain:   { label: 'Fountain',    sizes: [1.5, 2.5, 4, 6, 9],  opacity: 1,    pressure: 0.85, velocity: 0.55, taper: true  },
-  pencil:     { label: 'Pencil',      sizes: [1.5, 2.5, 4, 6, 9],  opacity: 0.88, pressure: 0.7,  velocity: 0.1,  taper: false, grain: true },
-  marker:     { label: 'Marker',      sizes: [3, 5, 8, 12, 18],    opacity: 1,    pressure: 0.15, velocity: 0,    taper: false },
-  highlighter:{ label: 'Highlighter', sizes: [10, 16, 24, 34, 48], opacity: 0.32, pressure: 0,    velocity: 0,    taper: false, blend: 'multiply', flat: true }
+  pen:        { label: 'Pen',         sizes: [1.2, 2, 3, 4.5, 7],    opacity: 1,    pressure: 0.55, velocity: 0.35, taper: true },
+  ballpoint:  { label: 'Ballpoint',   sizes: [0.8, 1.4, 2, 3, 4.5],  opacity: 0.94, pressure: 0.22, velocity: 0.12, taper: false },
+  gel:        { label: 'Gel pen',     sizes: [1.2, 2, 3, 4.5, 6.5],  opacity: 1,    pressure: 0.4,  velocity: 0.18, taper: true },
+  fountain:   { label: 'Fountain',    sizes: [1.5, 2.5, 4, 6, 9],    opacity: 1,    pressure: 0.85, velocity: 0.55, taper: true },
+  quill:      { label: 'Quill',       sizes: [2, 3.5, 5, 7, 10],     opacity: 1,    pressure: 0.45, velocity: 0.15, taper: true, nib: -0.7, nibMin: 0.16 },
+  brush:      { label: 'Brush',       sizes: [2, 4, 7, 11, 16],      opacity: 1,    pressure: 1,    velocity: 0.45, taper: true },
+  felt:       { label: 'Felt-tip',    sizes: [1.5, 2.5, 4, 6, 9],    opacity: 0.96, pressure: 0.12, velocity: 0,    taper: false },
+  pencil:     { label: 'Pencil',      sizes: [1.5, 2.5, 4, 6, 9],    opacity: 0.88, pressure: 0.7,  velocity: 0.1,  taper: false, grain: 0.5,  jitter: 0.4 },
+  crayon:     { label: 'Crayon',      sizes: [4, 7, 11, 16, 24],     opacity: 0.7,  pressure: 0.55, velocity: 0.1,  taper: false, grain: 0.9,  jitter: 1.7 },
+  pastel:     { label: 'Pastel',      sizes: [6, 10, 16, 24, 34],    opacity: 0.46, pressure: 0.45, velocity: 0.05, taper: false, grain: 1.25, jitter: 3.1 },
+  marker:     { label: 'Marker',      sizes: [3, 5, 8, 12, 18],      opacity: 1,    pressure: 0.15, velocity: 0,    taper: false, constant: true },
+  highlighter:{ label: 'Highlighter', sizes: [10, 16, 24, 34, 48],   opacity: 0.32, pressure: 0,    velocity: 0,    taper: false, blend: 'multiply', flat: true, constant: true }
 };
+
+export const ERASER_SIZES = [10, 18, 30, 48, 76];
+export const ERASE_MODES = [
+  { id: 'precise', label: 'Precision',      hint: 'Rubs out only the part you touch' },
+  { id: 'stroke',  label: 'Whole stroke',   hint: 'Removes the entire line you touch' },
+  { id: 'object',  label: 'Stroke + photo', hint: 'Also removes photos you touch' }
+];
+
+/** Pen-type tools, in the order the pen picker shows them. */
+export const PEN_IDS = ['pen', 'ballpoint', 'gel', 'fountain', 'quill', 'brush', 'felt', 'pencil', 'crayon', 'pastel', 'marker'];
 
 /* ---------- capture ---------- */
 
@@ -65,6 +82,12 @@ function widths(pts, spec, base) {
   for (let i = 0; i < n; i++) {
     const p = pts[i*3+2];
     let f = 1;
+    if (spec.nib != null) {
+      // Broad-edge nib: the line is fat across the nib and hairline along it.
+      const j = Math.min(n - 1, i + 1), k = Math.max(0, i - 1);
+      const dir = Math.atan2(pts[j*3+1] - pts[k*3+1], pts[j*3] - pts[k*3]);
+      f *= Math.max(spec.nibMin || 0.15, Math.abs(Math.sin(dir - spec.nib)));
+    }
     if (pk > 0) {
       const pv = p < 0 ? 0.5 : p;
       f *= (1 - pk) + pk * (0.35 + 1.3 * pv);
@@ -116,7 +139,7 @@ export function drawStroke(ctx, stroke, opts = {}) {
   }
 
   // Highlighter & marker: constant-width path, one pass so overlaps don't darken
-  if (spec.flat || spec.pressure === 0.15) {
+  if (spec.constant) {
     ctx.lineWidth = stroke.size;
     ctx.beginPath();
     path(ctx, pts, n);
@@ -127,11 +150,13 @@ export function drawStroke(ctx, stroke, opts = {}) {
   const w = widths(pts, spec, stroke.size);
 
   if (spec.grain) {
-    // Pencil: layered strokes with slight offsets read as tooth on paper
-    ctx.globalAlpha *= 0.5;
-    for (let pass = 0; pass < 3; pass++) {
-      const o = pass === 0 ? 0 : (pass === 1 ? 0.4 : -0.4);
-      ribbon(ctx, pts, w, n, o, 0.85);
+    // Pencil / crayon / pastel: offset passes read as tooth on the paper.
+    const g = spec.grain, jit = (spec.jitter || 0.4) * stroke.size * 0.22;
+    const passes = g > 1 ? 5 : g > 0.7 ? 4 : 3;
+    ctx.globalAlpha *= g > 0.7 ? 0.34 : 0.5;
+    for (let pass = 0; pass < passes; pass++) {
+      const t = passes === 1 ? 0 : (pass / (passes - 1)) * 2 - 1;   // -1 .. 1
+      ribbon(ctx, pts, w, n, t * jit, 0.9 - Math.abs(t) * 0.22);
     }
     ctx.restore(); return;
   }
@@ -198,15 +223,22 @@ export function strokeBounds(s) {
   return { x0: x0 - pad, y0: y0 - pad, x1: x1 + pad, y1: y1 + pad };
 }
 
+/** Squared distance from (x,y) to the segment (ax,ay)-(bx,by). */
+export function segDistSq(x, y, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay;
+  const len = dx * dx + dy * dy;
+  let t = len ? ((x - ax) * dx + (y - ay) * dy) / len : 0;
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  const px = ax + dx * t - x, py = ay + dy * t - y;
+  return px * px + py * py;
+}
+
 export function strokeHits(s, x, y, r) {
   const p = s.pts, n = p.length / 3;
   const rr = (r + (s.size || 2) / 2) ** 2;
-  for (let i = 0; i < n; i++) {
-    if ((p[i*3] - x) ** 2 + (p[i*3+1] - y) ** 2 < rr) return true;
-    if (i < n - 1) {
-      const mx = (p[i*3] + p[(i+1)*3]) / 2, my = (p[i*3+1] + p[(i+1)*3+1]) / 2;
-      if ((mx - x) ** 2 + (my - y) ** 2 < rr) return true;
-    }
+  if (n === 1) return (p[0] - x) ** 2 + (p[1] - y) ** 2 < rr;
+  for (let i = 0; i < n - 1; i++) {
+    if (segDistSq(x, y, p[i*3], p[i*3+1], p[(i+1)*3], p[(i+1)*3+1]) < rr) return true;
   }
   return false;
 }
@@ -363,4 +395,40 @@ function maxDeviation(P, a, b) {
   let m = 0;
   for (const [x,y] of P) m = Math.max(m, Math.abs((x-a[0])*dy - (y-a[1])*dx) / L);
   return m;
+}
+
+
+/* ---------- precision erasing ---------- */
+
+/**
+ * Cut a disc out of a stroke. Returns null when nothing was touched, otherwise the
+ * surviving pieces (possibly none, if the whole stroke fell inside the disc).
+ */
+export function eraseFromStroke(stroke, x, y, r, newId) {
+  const p = stroke.pts, n = p.length / 3;
+  const rr = (r + (stroke.size || 2) * 0.4) ** 2;
+  const keep = new Array(n).fill(true);
+  let hit = false;
+
+  // Points inside the disc go, and so do both ends of any segment that passes
+  // through it — otherwise a small eraser slips between two widely spaced points.
+  for (let i = 0; i < n; i++) {
+    if ((p[i*3] - x) ** 2 + (p[i*3+1] - y) ** 2 < rr) { keep[i] = false; hit = true; }
+  }
+  for (let i = 0; i < n - 1; i++) {
+    if (segDistSq(x, y, p[i*3], p[i*3+1], p[(i+1)*3], p[(i+1)*3+1]) < rr) {
+      keep[i] = false; keep[i+1] = false; hit = true;
+    }
+  }
+  if (!hit) return null;
+
+  const pieces = [];
+  let run = [];
+  for (let i = 0; i < n; i++) {
+    if (keep[i]) run.push(p[i*3], p[i*3+1], p[i*3+2]);
+    else { if (run.length >= 6) pieces.push(run); run = []; }
+  }
+  if (run.length >= 6) pieces.push(run);
+
+  return pieces.map(pts => ({ ...stroke, id: newId(), pts }));
 }

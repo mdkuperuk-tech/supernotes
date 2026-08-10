@@ -2,7 +2,7 @@
 
 import * as S from './store.js';
 import * as Ink from './ink.js';
-import { drawPaper, PAGE, PAPER_COLORS, todoCheckboxes, roundRect } from './papers.js';
+import { drawPaper, PAGE, PAPER_COLORS, todoCheckboxes, dailyTargets, roundRect } from './papers.js';
 import { icon, el, toast, modal, confirmDialog, popover, fmtDate } from './ui.js';
 import * as Drive from './drive.js';
 import { buildPDF, canvasToJPEG, shareFile, downloadBlob } from './pdfout.js';
@@ -82,7 +82,7 @@ export class Editor {
 
     this.vp = this.q('vp'); this.doc = this.q('doc'); this.selEl = this.q('sel');
     this.root.querySelector('.title-btn').textContent = this.nb.title;
-    this.q('sub').textContent = { journal: 'Journal', todo: 'Daily to-do', notes: 'Notebook' }[this.nb.type] || 'Notebook';
+    this.q('sub').textContent = { journal: 'Journal', todo: 'Daily to-do', planner: 'Daily planner', notes: 'Notebook' }[this.nb.type] || 'Notebook';
 
     this.buildRail();
     this.root.querySelector('.ed').addEventListener('click', e => {
@@ -116,15 +116,21 @@ export class Editor {
 
   buildRail() {
     const t = this.app.tool;
+    const penId = Ink.PEN_IDS.includes(t.name) ? t.name : (Ink.PEN_IDS.includes(t.pen) ? t.pen : 'pen');
+    const penOn = Ink.PEN_IDS.includes(t.name);
     const tools = [
-      ['pen', 'Pen'], ['fountain', 'Fountain pen'], ['pencil', 'Pencil'], ['marker', 'Marker'],
-      ['highlighter', 'Highlighter'], ['eraser', 'Eraser'], ['lasso', 'Select'], ['shapes', 'Shape'],
-      ['text', 'Text box'], ['image', 'Photo'], ['mic', 'Voice note'], ['hand', 'Pan']
+      ['highlighter', 'Highlighter'], ['lasso', 'Select — tap an item, or draw around a group'],
+      ['shapes', 'Shape'], ['text', 'Text box'], ['image', 'Photo'], ['mic', 'Voice note'], ['hand', 'Pan']
     ];
     const rail = this.q('rail');
-    rail.innerHTML = tools.map(([id, label]) =>
-      `<button class="tool ${t.name === id ? 'on' : ''}" data-a="tool" data-tool="${id}" title="${label}">${icon(id === 'shapes' ? 'shapes' : id)}</button>`
-    ).join('') + `<div class="rail-sep"></div>
+    rail.innerHTML =
+      `<button class="tool pen-slot ${penOn ? 'on' : ''}" data-a="pens" data-tool="${penId}" title="${Ink.TOOLS[penId].label} — tap again to switch pen">
+         ${icon(penIcon(penId))}<i class="caret"></i></button>` +
+      `<button class="tool pen-slot ${t.name === 'eraser' ? 'on' : ''}" data-a="erasers" data-tool="eraser" title="Eraser — tap again for size and mode">
+         ${icon('eraser')}<i class="caret"></i></button>` +
+      tools.map(([id, label]) =>
+        `<button class="tool ${t.name === id ? 'on' : ''}" data-a="tool" data-tool="${id}" title="${label}">${icon(id === 'shapes' ? 'shapes' : id)}</button>`
+      ).join('') + `<div class="rail-sep"></div>
       <button class="tool swatch" data-a="colors" title="Colour"><i style="background:${t.color}"></i></button>
       <button class="tool" data-a="sizes" title="Size"><span class="sizedot" style="width:${Math.min(20, 4 + t.size)}px;height:${Math.min(20, 4 + t.size)}px"></span></button>`;
   }
@@ -134,6 +140,7 @@ export class Editor {
     t.name = name;
     if (name === 'highlighter' && !HL_PALETTE.includes(t.color)) { t.prevColor = t.color; t.color = HL_PALETTE[0]; }
     if (name !== 'highlighter' && t.prevColor) { t.color = t.prevColor; t.prevColor = null; }
+    if (Ink.PEN_IDS.includes(name)) t.pen = name;
     const spec = Ink.TOOLS[name];
     if (spec && !spec.sizes.includes(t.size)) t.size = spec.sizes[2];
     this.app.saveTool();
@@ -156,6 +163,14 @@ export class Editor {
         break;
       }
       case 'tool': this.setTool(btn.dataset.tool); break;
+      case 'pens':
+        if (Ink.PEN_IDS.includes(this.app.tool.name)) this.penPop(btn);
+        else this.setTool(btn.dataset.tool);
+        break;
+      case 'erasers':
+        if (this.app.tool.name === 'eraser') this.eraserPop(btn);
+        else this.setTool('eraser');
+        break;
       case 'colors': this.colorPop(btn); break;
       case 'sizes': this.sizePop(btn); break;
       case 'undo': this.undo(); break;
@@ -169,6 +184,59 @@ export class Editor {
       case 'zoomreset': this.fitWidth(); break;
       case 'addpage': await this.addPage(this.currentPageIndex() + 1); break;
     }
+  }
+
+  penPop(btn) {
+    const t = this.app.tool;
+    const wrap = el(`<div class="pens">${Ink.PEN_IDS.map(id => {
+      const sp = Ink.TOOLS[id];
+      return `<button class="penopt ${t.name === id ? 'on' : ''}" data-p="${id}">
+        <canvas width="120" height="34"></canvas><span>${sp.label}</span></button>`;
+    }).join('')}</div>`);
+    const p = popover(btn, wrap, { side: 'right' });
+    wrap.querySelectorAll('.penopt').forEach(b => {
+      const c = b.querySelector('canvas'), ctx = c.getContext('2d');
+      const id = b.dataset.p, sp = Ink.TOOLS[id];
+      const pts = [];
+      for (let i = 0; i <= 24; i++) {
+        const u = i / 24;
+        pts.push(8 + u * 104, 17 - Math.sin(u * Math.PI * 1.6) * 8, 0.25 + Math.sin(u * Math.PI) * 0.7);
+      }
+      Ink.drawStroke(ctx, { tool: id, color: t.color, size: sp.sizes[2], pts });
+    });
+    wrap.addEventListener('click', e => {
+      const b = e.target.closest('[data-p]'); if (!b) return;
+      p.remove();
+      t.pen = b.dataset.p;
+      this.setTool(b.dataset.p);
+    });
+  }
+
+  eraserPop(btn) {
+    const t = this.app.tool;
+    const wrap = el(`<div class="pens eraserpop">
+      <div class="pophead">Erases</div>
+      ${Ink.ERASE_MODES.map(m => `<button class="penopt mode ${t.eraseMode === m.id ? 'on' : ''}" data-m="${m.id}">
+          <strong>${m.label}</strong><em>${m.hint}</em></button>`).join('')}
+      <div class="pophead">Size</div>
+      <div class="ersizes">${Ink.ERASER_SIZES.map(v => `<button class="ersize ${t.eraserSize === v ? 'on' : ''}" data-s="${v}">
+        <i style="width:${Math.min(38, v * 0.62)}px;height:${Math.min(38, v * 0.62)}px"></i></button>`).join('')}</div>
+    </div>`);
+    const p = popover(btn, wrap, { side: 'right' });
+    wrap.addEventListener('click', e => {
+      const m = e.target.closest('[data-m]'), z = e.target.closest('[data-s]');
+      if (m) { t.eraseMode = m.dataset.m; wrap.querySelectorAll('.mode').forEach(x => x.classList.toggle('on', x === m)); }
+      if (z) { t.eraserSize = +z.dataset.s; wrap.querySelectorAll('.ersize').forEach(x => x.classList.toggle('on', x === z)); }
+      if (m || z) this.app.saveTool();
+    });
+  }
+
+  /** Swap between the last pen and the eraser — the two-finger-tap and E shortcut. */
+  quickSwap() {
+    const t = this.app.tool;
+    this.setTool(t.name === 'eraser' ? (t.pen || 'pen') : 'eraser');
+    if (navigator.vibrate) navigator.vibrate(6);
+    toast(t.name === 'eraser' ? 'Eraser' : (Ink.TOOLS[this.app.tool.name]?.label || 'Pen'));
   }
 
   colorPop(btn) {
@@ -187,6 +255,7 @@ export class Editor {
 
   sizePop(btn) {
     const t = this.app.tool;
+    if (t.name === 'eraser') return this.eraserPop(btn);
     const spec = Ink.TOOLS[t.name] || Ink.TOOLS.pen;
     const wrap = el(`<div class="sizes">${spec.sizes.map(s =>
       `<button class="sz ${s === t.size ? 'on' : ''}" data-s="${s}"><i style="width:${Math.min(30, 3 + s * 1.5)}px;height:${Math.min(30, 3 + s * 1.5)}px;background:${t.color}"></i></button>`).join('')}
@@ -208,8 +277,8 @@ export class Editor {
       ['clearpage', 'Clear this page', 'trash'],
       ['delpage', 'Delete this page', 'trash']
     ];
-    if (this.nb.type === 'todo') items.unshift(['carry', 'Carry unfinished to a new day', 'todo']);
-    if (this.nb.type === 'journal' || this.nb.type === 'todo') items.unshift(['newday', "New page for today", 'plus']);
+    if (this.nb.type === 'todo' || this.nb.type === 'planner') items.unshift(['carry', 'Carry unfinished to a new day', 'todo']);
+    if (['journal', 'todo', 'planner'].includes(this.nb.type)) items.unshift(['newday', "New page for today", 'plus']);
     const wrap = el(`<div class="menu">${items.map(([a, l, ic]) => `<button data-m="${a}">${icon(ic)}<span>${l}</span></button>`).join('')}</div>`);
     const p = popover(btn, wrap);
     wrap.addEventListener('click', async e => {
@@ -268,12 +337,13 @@ export class Editor {
     const paper = paperOverride || { ...(this.nb.defaultPaper || { kind: 'lined', color: 'white' }) };
     if (type === 'journal') paper.kind = 'journal';
     if (type === 'todo') paper.kind = 'todo';
+    if (type === 'planner') paper.kind = 'daily';
     const now = new Date();
     return {
       id: S.uid(), notebookId: this.nb.id, index,
       w: PAGE.w, h: PAGE.h, paper,
       strokes: [], objects: [],
-      meta: (type === 'journal' || type === 'todo')
+      meta: (type === 'journal' || type === 'todo' || type === 'planner')
         ? { date: now.toISOString(), dateLabel: fmtDate(now), checks: {} }
         : {},
       createdAt: Date.now()
@@ -307,7 +377,7 @@ export class Editor {
     const now = new Date();
     p.meta = { date: now.toISOString(), dateLabel: fmtDate(now), checks: {}, carriedFrom: from.id };
     // copy ink from unfinished rows: any row whose checkbox is unchecked
-    const boxes = todoCheckboxes(from);
+    const boxes = from.paper.kind === 'daily' ? dailyTargets().boxes.filter(b => /^[pbe]/.test(b.key)) : todoCheckboxes(from);
     const done = from.meta?.checks || {};
     const keep = boxes.filter(b => !done[b.key]);
     const rowH = 54;
@@ -422,9 +492,20 @@ export class Editor {
     const ov = d.querySelector('.ov');
     ov.innerHTML = '';
 
-    if (p.paper.kind === 'todo') {
+    if (p.paper.kind === 'todo' || p.paper.kind === 'daily') {
       const checks = p.meta.checks || (p.meta.checks = {});
-      for (const b of todoCheckboxes(p)) {
+      const targets = p.paper.kind === 'daily' ? dailyTargets() : { boxes: todoCheckboxes(p), glasses: [] };
+      for (const g of targets.glasses) {
+        const n = el(`<button class="glass ${checks[g.key] ? 'on' : ''}" style="left:${g.x}px;top:${g.y}px;width:${g.s}px;height:${g.s}px"></button>`);
+        n.onclick = ev => {
+          ev.stopPropagation();
+          checks[g.key] = !checks[g.key];
+          n.classList.toggle('on', !!checks[g.key]);
+          this.queueSave(p);
+        };
+        ov.appendChild(n);
+      }
+      for (const b of targets.boxes) {
         const n = el(`<button class="tick ${checks[b.key] ? 'on' : ''}" style="left:${b.x}px;top:${b.y}px;width:${b.s}px;height:${b.s}px">${checks[b.key] ? icon('check') : ''}</button>`);
         n.onclick = ev => {
           ev.stopPropagation();
@@ -556,7 +637,8 @@ export class Editor {
       const m = e.metaKey || e.ctrlKey;
       if (m && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? this.redo() : this.undo(); }
       if (m && e.key.toLowerCase() === 'y') { e.preventDefault(); this.redo(); }
-      if (!m && ['1','2','3','4','5','6','7'].includes(e.key)) this.setTool(['pen','fountain','pencil','marker','highlighter','eraser','lasso'][+e.key - 1]);
+      if (!m && ['1','2','3','4','5','6','7'].includes(e.key)) this.setTool([this.app.tool.pen || 'pen','fountain','pencil','marker','highlighter','eraser','lasso'][+e.key - 1]);
+      if (e.key.toLowerCase() === 'e' && !m) { e.preventDefault(); this.quickSwap(); }
       if (e.key === 'Escape') this.clearSelection();
       if ((e.key === 'Backspace' || e.key === 'Delete') && this.selection) { e.preventDefault(); this.deleteSelection(); }
       if (e.key === ' ') this._space = true;
@@ -596,7 +678,7 @@ export class Editor {
   }
 
   onDown(e) {
-    if (e.target.closest('.tbox, .apin, .tick, .selframe')) return;
+    if (e.target.closest('.tbox, .apin, .tick, .glass, .selframe')) return;
     this._pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
 
     if (this._pointers.size === 2) { this.cancelDraw(); this.startPinch(); return; }
@@ -615,8 +697,11 @@ export class Editor {
     this.clearSelection();
 
     if (tool.name === 'text') { this.addTextBox(hit); return; }
-    if (tool.name === 'eraser') { this._erase = { page: hit.page, removed: [] }; this.eraseAt(hit); return; }
-    if (tool.name === 'lasso') { this._lasso = { page: hit.page, pts: [hit.x, hit.y] }; return; }
+    if (tool.name === 'eraser') {
+      this._erase = { page: hit.page, before: hit.page.strokes.slice(), beforeObjs: hit.page.objects.slice(), changed: false };
+      this.eraseAt(hit); return;
+    }
+    if (tool.name === 'lasso') { this._lasso = { page: hit.page, pts: [hit.x, hit.y], x0: hit.x, y0: hit.y, far: 0 }; return; }
 
     const draw = new Ink.StrokeCapture(tool.name === 'shapes' ? 'pen' : tool.name, tool.color, tool.size);
     draw.add(hit.x, hit.y, e.pressure, performance.now());
@@ -639,7 +724,11 @@ export class Editor {
 
     const hit = this.toPage(e.clientX, e.clientY);
     if (this._erase) { this.eraseAt(hit); return; }
-    if (this._lasso) { this._lasso.pts.push(hit.x, hit.y); this.paintLasso(); return; }
+    if (this._lasso) {
+      this._lasso.pts.push(hit.x, hit.y);
+      this._lasso.far = Math.max(this._lasso.far, Math.hypot(hit.x - this._lasso.x0, hit.y - this._lasso.y0));
+      this.paintLasso(); return;
+    }
     if (!this._draw) return;
 
     const evts = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
@@ -654,7 +743,16 @@ export class Editor {
 
   onUp(e) {
     this._pointers.delete(e.pointerId);
-    if (this._pointers.size < 2) this._pinch = null;
+    if (this._pointers.size < 2 && this._pinch) {
+      const tt = this._twoTap;
+      this._pinch = null; this._twoTap = null;
+      // A quick two-finger tap that neither zoomed nor panned = swap pen ⇄ eraser.
+      if (tt && performance.now() - tt.t0 < 320 && tt.moved < 16 && Math.abs(this.zoom / tt.zoom0 - 1) < 0.04) {
+        this._pointers.clear();
+        this.quickSwap();
+        return;
+      }
+    }
     if (this._pan && this._pointers.size === 0) { this._pan = null; this.updatePageNo(); return; }
     if (this._moveSel) { this.endMoveSelection(); return; }
     if (this._erase) { this.commitErase(); return; }
@@ -691,6 +789,7 @@ export class Editor {
   startPinch() {
     const [a, b] = [...this._pointers.values()];
     const r = this.vp.getBoundingClientRect();
+    this._twoTap = { t0: performance.now(), cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2, zoom0: this.zoom, moved: 0 };
     this._pinch = {
       d: Math.hypot(a.x - b.x, a.y - b.y),
       cx: (a.x + b.x) / 2 - r.left, cy: (a.y + b.y) / 2 - r.top,
@@ -709,6 +808,7 @@ export class Editor {
     this.zoom = nz;
     this.tx = cx - (this._pinch.cx - this._pinch.tx) * kk;
     this.ty = cy - (this._pinch.cy - this._pinch.ty) * kk;
+    if (this._twoTap) this._twoTap.moved = Math.max(this._twoTap.moved, Math.hypot(cx + r.left - this._twoTap.cx, cy + r.top - this._twoTap.cy));
     this.applyTransform();
     clearTimeout(this._zt);
     this._zt = setTimeout(() => {
@@ -752,24 +852,62 @@ export class Editor {
   /* ---- eraser ---- */
   eraseAt(hit) {
     if (!this._erase || hit.page !== this._erase.page) return;
-    const r = Math.max(6, this.app.tool.size * 1.6);
+    const t = this.app.tool;
+    const r = (t.eraserSize || 30) / 2;
     const page = hit.page;
-    const keep = [];
+    const mode = t.eraseMode || 'precise';
     let changed = false;
-    for (const s of page.strokes) {
-      if (Ink.strokeHits(s, hit.x, hit.y, r)) { this._erase.removed.push(s); changed = true; }
-      else keep.push(s);
+
+    if (mode === 'precise') {
+      const out = [];
+      for (const st of page.strokes) {
+        const pieces = Ink.eraseFromStroke(st, hit.x, hit.y, r, S.uid);
+        if (pieces === null) { out.push(st); continue; }
+        changed = true;
+        out.push(...pieces);
+      }
+      if (changed) page.strokes = out;
+    } else {
+      const keep = [];
+      for (const st of page.strokes) {
+        if (Ink.strokeHits(st, hit.x, hit.y, r)) changed = true;
+        else keep.push(st);
+      }
+      if (changed) page.strokes = keep;
+      if (mode === 'object') {
+        const objs = page.objects.filter(o => !(o.type === 'image' &&
+          hit.x > o.x - r && hit.x < o.x + o.w + r && hit.y > o.y - r && hit.y < o.y + o.h + r));
+        if (objs.length !== page.objects.length) { page.objects = objs; changed = true; this.syncOverlay(page); }
+      }
     }
-    if (changed) { page.strokes = keep; this.renderPage(page); }
+    if (changed) { this._erase.changed = true; this.renderPage(page); }
+    this.paintEraserRing(page, hit.x, hit.y, r);
   }
+
+  paintEraserRing(page, x, y, r) {
+    const c = this.pageEls.get(page.id)?.querySelector('.live'); if (!c) return;
+    const R = this.renderScale, ctx = c.getContext('2d');
+    ctx.setTransform(R, 0, 0, R, 0, 0);
+    ctx.clearRect(0, 0, page.w, page.h);
+    ctx.save();
+    ctx.strokeStyle = 'rgba(90,110,140,.75)'; ctx.lineWidth = 1.6 / this.zoom;
+    ctx.fillStyle = 'rgba(160,180,210,.16)';
+    ctx.beginPath(); ctx.arc(x, y, r, 0, 6.284); ctx.fill(); ctx.stroke();
+    ctx.restore();
+  }
+
   commitErase() {
     const e = this._erase; this._erase = null;
-    if (!e || !e.removed.length) return;
-    const page = e.page, removed = e.removed;
+    if (!e) return;
+    this.clearLive(e.page);
+    if (!e.changed) return;
+    const page = e.page;
+    const before = e.before, beforeObjs = e.beforeObjs;
+    const after = page.strokes.slice(), afterObjs = page.objects.slice();
     this.queueSave(page);
     this.pushUndo({
-      undo: () => { page.strokes = page.strokes.concat(removed).sort((a,b)=> (a._o||0)-(b._o||0)); this.queueSave(page); this.renderPage(page); },
-      redo: () => { const ids = new Set(removed.map(s => s.id)); page.strokes = page.strokes.filter(s => !ids.has(s.id)); this.queueSave(page); this.renderPage(page); }
+      undo: () => { page.strokes = before.slice(); page.objects = beforeObjs.slice(); this.queueSave(page); this.renderPage(page); },
+      redo: () => { page.strokes = after.slice(); page.objects = afterObjs.slice(); this.queueSave(page); this.renderPage(page); }
     });
   }
 
@@ -778,11 +916,37 @@ export class Editor {
     const l = this._lasso; this._lasso = null;
     if (!l) return;
     this.clearLive(l.page);
-    if (l.pts.length < 8) return;
+
+    // A tap (rather than a loop) selects whatever sits under the finger.
+    if (l.pts.length < 8 || l.far < 14) { this.tapSelect(l.page, l.x0, l.y0); return; }
     const strokes = l.page.strokes.filter(s => Ink.strokeMostlyInPoly(s, l.pts));
     const objs = l.page.objects.filter(o => o.type === 'image' && Ink.pointInPoly(o.x + o.w / 2, o.y + o.h / 2, l.pts));
     if (!strokes.length && !objs.length) return;
     this.selection = { page: l.page, strokes, objs, bounds: this.calcBounds(strokes, objs) };
+    this.drawSelFrame();
+  }
+
+  /** Pick the topmost image/stroke under a point. */
+  tapSelect(page, x, y) {
+    for (let i = page.objects.length - 1; i >= 0; i--) {
+      const o = page.objects[i];
+      if (o.type !== 'image') continue;
+      if (x >= o.x && x <= o.x + o.w && y >= o.y && y <= o.y + o.h) {
+        this.selection = { page, strokes: [], objs: [o], bounds: this.calcBounds([], [o]) };
+        this.drawSelFrame();
+        return;
+      }
+    }
+    // nothing there — grab nearby ink instead so a tap on writing still selects it
+    const near = page.strokes.filter(st => Ink.strokeHits(st, x, y, 22));
+    if (!near.length) { this.clearSelection(); return; }
+    const seed = Ink.strokeBounds(near[near.length - 1]);
+    const pad = 26;
+    const group = page.strokes.filter(st => {
+      const b = Ink.strokeBounds(st);
+      return b.x1 > seed.x0 - pad && b.x0 < seed.x1 + pad && b.y1 > seed.y0 - pad && b.y0 < seed.y1 + pad;
+    });
+    this.selection = { page, strokes: group, objs: [], bounds: this.calcBounds(group, []) };
     this.drawSelFrame();
   }
 
@@ -1038,15 +1202,27 @@ export class Editor {
       if (img) { ctx.save(); ctx.translate(o.x + o.w / 2, o.y + o.h / 2); if (o.rot) ctx.rotate(o.rot); ctx.drawImage(img, -o.w / 2, -o.h / 2, o.w, o.h); ctx.restore(); }
     }
     for (const s of page.strokes) Ink.drawStroke(ctx, s);
-    // to-do ticks
-    if (page.paper.kind === 'todo') {
+    // ticked boxes and filled water glasses
+    if (page.paper.kind === 'todo' || page.paper.kind === 'daily') {
       const checks = page.meta?.checks || {};
+      const t = page.paper.kind === 'daily' ? dailyTargets() : { boxes: todoCheckboxes(page), glasses: [] };
       ctx.save(); ctx.strokeStyle = '#2f9e8f'; ctx.lineWidth = 3.2; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-      for (const b of todoCheckboxes(page)) {
+      for (const b of t.boxes) {
         if (!checks[b.key]) continue;
+        const k = b.s / 24;
         ctx.beginPath();
-        ctx.moveTo(b.x + 5, b.y + 12); ctx.lineTo(b.x + 10, b.y + 18); ctx.lineTo(b.x + 19, b.y + 6);
+        ctx.moveTo(b.x + 5 * k, b.y + 12 * k); ctx.lineTo(b.x + 10 * k, b.y + 18 * k); ctx.lineTo(b.x + 19 * k, b.y + 6 * k);
         ctx.stroke();
+      }
+      ctx.fillStyle = 'rgba(47,127,209,.32)';
+      for (const g of t.glasses) {
+        if (!checks[g.key]) continue;
+        ctx.beginPath();
+        ctx.moveTo(g.x + g.s * 0.19, g.y + g.s * 0.14);
+        ctx.lineTo(g.x + g.s * 0.81, g.y + g.s * 0.14);
+        ctx.lineTo(g.x + g.s * 0.70, g.y + g.s * 0.96);
+        ctx.lineTo(g.x + g.s * 0.30, g.y + g.s * 0.96);
+        ctx.closePath(); ctx.fill();
       }
       ctx.restore();
     }
@@ -1210,6 +1386,12 @@ export class Editor {
 }
 
 /* ---------- helpers ---------- */
+
+function penIcon(id) {
+  return ({ pen: 'pen', ballpoint: 'pen', gel: 'pen', fountain: 'fountain', quill: 'fountain',
+            brush: 'marker', felt: 'marker', pencil: 'pencil', crayon: 'pencil',
+            pastel: 'pencil', marker: 'marker' })[id] || 'pen';
+}
 
 function fmtDur(s) { s = s || 0; return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; }
 const safe = s => String(s).replace(/[\\/:*?"<>|]/g, '-').slice(0, 80);

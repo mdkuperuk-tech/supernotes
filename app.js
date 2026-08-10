@@ -4,13 +4,13 @@ import * as S from './store.js';
 import * as Drive from './drive.js';
 import { Editor } from './editor.js';
 import { COVER_IDS, coverDataURI, HUES } from './covers.js';
-import { PAPER_KINDS } from './papers.js';
+import { PAPER_KINDS, drawPaper, PAGE } from './papers.js';
 import { icon, el, toast, modal, confirmDialog, promptDialog, popover, fmtDate, fmtShort, todayKey } from './ui.js';
 
 class App {
   constructor() {
     this.root = document.getElementById('app');
-    this.tool = { name: 'pen', color: '#1b1f27', size: 3, prevTool: 'pen' };
+    this.tool = { name: 'pen', color: '#1b1f27', size: 3, prevTool: 'pen', pen: 'pen', eraserSize: 30, eraseMode: 'precise' };
     this.settings = { fingerDraw: false, autoSync: true, pdfCover: true };
     this.editor = null;
   }
@@ -64,6 +64,7 @@ class App {
         <div class="quick">
           <button class="qcard j" data-a="quick-journal">${icon('journal')}<div><strong>Today's journal</strong><span>${fmtDate(new Date())}</span></div></button>
           <button class="qcard t" data-a="quick-todo">${icon('todo')}<div><strong>Today's to-do</strong><span>Top 3 personal · Top 3 business</span></div></button>
+          <button class="qcard p" data-a="quick-planner">${icon('grid')}<div><strong>Today's planner</strong><span>Schedule · water · meals · notes</span></div></button>
         </div>
 
         <div class="shelf-head"><h2>Notebooks</h2><button class="primary" data-a="new">${icon('plus')} New notebook</button></div>
@@ -82,6 +83,7 @@ class App {
       if (a === 'sync') this.syncNow();
       if (a === 'quick-journal') this.openToday('journal');
       if (a === 'quick-todo') this.openToday('todo');
+      if (a === 'quick-planner') this.openToday('planner');
     });
     this.paintSyncChip();
   }
@@ -90,7 +92,7 @@ class App {
     const c = el(`<div class="card">
       <button class="cover" data-open>
         <img alt="" src="${coverDataURI(nb.cover || {}, { title: nb.title })}">
-        <span class="type">${{ journal: 'Journal', todo: 'To-do', notes: 'Notes' }[nb.type] || 'Notes'}</span>
+        <span class="type">${{ journal: 'Journal', todo: 'To-do', planner: 'Planner', notes: 'Notes' }[nb.type] || 'Notes'}</span>
       </button>
       <div class="meta"><strong></strong><span>${fmtShort(nb.updatedAt || Date.now())}</span></div>
       <button class="icon-btn tiny more" data-more>${icon('more')}</button>
@@ -151,7 +153,8 @@ class App {
     const types = [
       ['notes', 'Notebook', 'Free-form pages for anything', 'book'],
       ['journal', 'Journal', 'Dated entries, gratitude, voice notes', 'journal'],
-      ['todo', 'Daily to-do', 'Top 3 personal, top 3 business, everything else', 'todo']
+      ['todo', 'Daily to-do', 'Top 3 personal, top 3 business, everything else', 'todo'],
+      ['planner', 'Daily planner', 'Schedule, water, meals, tasks, notes', 'grid']
     ];
     let choice = { type: 'notes', paper: 'lined', cover: { design: 'aurora', hue: HUES[Math.floor(Math.random() * HUES.length)] } };
     const body = el(`<div class="newnb">
@@ -160,15 +163,28 @@ class App {
       <label class="lbl">Type</label>
       <div class="types">${types.map(([id, n, d, ic]) => `<button class="type-opt ${id === 'notes' ? 'on' : ''}" data-type="${id}">${icon(ic)}<strong>${n}</strong><span>${d}</span></button>`).join('')}</div>
       <label class="lbl" data-paperlbl>Paper</label>
-      <select class="field" data-paper>${PAPER_KINDS.filter(k => !['journal','todo'].includes(k.id)).map(k => `<option value="${k.id}" ${k.id === 'lined' ? 'selected' : ''}>${k.label}</option>`).join('')}</select>
+      <div class="paper-grid" data-papergrid>${PAPER_KINDS.filter(k => !['journal','todo','daily'].includes(k.id)).map(k =>
+        `<button type="button" class="paper-opt ${k.id === 'lined' ? 'on' : ''}" data-paper="${k.id}"><canvas width="112" height="158"></canvas><span>${k.label}</span></button>`).join('')}</div>
     </div>`);
+    let paperKind = 'lined';
+    body.querySelectorAll('[data-paper] canvas').forEach(c => {
+      const kind = c.parentElement.dataset.paper;
+      const ctx = c.getContext('2d');
+      ctx.scale(112 / PAGE.w, 158 / PAGE.h);
+      drawPaper(ctx, { w: PAGE.w, h: PAGE.h, paper: { kind, color: 'white' }, meta: { dateLabel: '' } });
+    });
+    body.addEventListener('click', e => {
+      const b = e.target.closest('[data-paper]'); if (!b) return;
+      paperKind = b.dataset.paper;
+      body.querySelectorAll('.paper-opt').forEach(x => x.classList.toggle('on', x === b));
+    });
     modal({
       title: 'New notebook', body, wide: true,
       actions: [
         { label: 'Cancel' },
         { label: 'Choose cover →', primary: true, onClick: () => {
             const title = body.querySelector('[data-t]').value.trim() || ({ notes: 'Notebook', journal: 'Journal', todo: 'Daily To-Do' })[choice.type];
-            const paper = choice.type === 'journal' ? 'journal' : choice.type === 'todo' ? 'todo' : body.querySelector('[data-paper]').value;
+            const paper = choice.type === 'journal' ? 'journal' : choice.type === 'todo' ? 'todo' : choice.type === 'planner' ? 'daily' : paperKind;
             this.coverPicker({ title, cover: { ...choice.cover, title } }, async nbLike => {
               const nb = await this.createNotebook({ title, type: choice.type, cover: nbLike.cover, paper });
               this.openNotebook(nb);
@@ -181,7 +197,7 @@ class App {
       choice.type = t.dataset.type;
       body.querySelectorAll('.type-opt').forEach(x => x.classList.toggle('on', x === t));
       const show = choice.type === 'notes';
-      body.querySelector('[data-paper]').style.display = show ? '' : 'none';
+      body.querySelector('[data-papergrid]').style.display = show ? '' : 'none';
       body.querySelector('[data-paperlbl]').style.display = show ? '' : 'none';
     });
   }
@@ -198,7 +214,7 @@ class App {
       id: S.uid(), notebookId: nb.id, index: 0, w: 1240, h: 1754,
       paper: { ...nb.defaultPaper },
       strokes: [], objects: [],
-      meta: (type === 'journal' || type === 'todo') ? { date: new Date().toISOString(), dateLabel: fmtDate(new Date()), checks: {} } : {},
+      meta: ['journal', 'todo', 'planner'].includes(type) ? { date: new Date().toISOString(), dateLabel: fmtDate(new Date()), checks: {} } : {},
       createdAt: Date.now()
     };
     await S.put('pages', p);
@@ -252,11 +268,14 @@ class App {
   async openToday(type) {
     const nbs = await S.listNotebooks();
     let nb = nbs.find(n => n.type === type);
-    if (!nb) nb = await this.createNotebook({
-      title: type === 'journal' ? 'Daily Journal' : 'Daily To-Do', type,
-      cover: { design: type === 'journal' ? 'dune' : 'minimal', hue: type === 'journal' ? 26 : 200 },
-      paper: type
-    });
+    if (!nb) {
+      const preset = {
+        journal: { title: 'Daily Journal', design: 'dune',    hue: 26,  paper: 'journal' },
+        todo:    { title: 'Daily To-Do',   design: 'minimal', hue: 200, paper: 'todo' },
+        planner: { title: 'Daily Planner', design: 'spine',   hue: 152, paper: 'daily' }
+      }[type];
+      nb = await this.createNotebook({ title: preset.title, type, cover: { design: preset.design, hue: preset.hue }, paper: preset.paper });
+    }
     await this.openNotebook(nb);
     const key = todayKey();
     const idx = this.editor.pages.findIndex(p => p.meta?.date && todayKey(new Date(p.meta.date)) === key);
@@ -266,17 +285,19 @@ class App {
 
   /* ---------- settings ---------- */
 
-  settingsPanel() {
+  async settingsPanel() {
     const d = Drive.state;
     const body = el(`<div class="settings">
       <section>
         <h3>${icon('cloud')} Google Drive</h3>
-        <p class="muted">Notebooks sync to a <b>SuperNotes</b> folder in your Google Drive. The app uses the narrow <code>drive.file</code> permission, so it can only ever see files it created itself.</p>
-        <label class="lbl">OAuth client ID</label>
-        <input class="field" data-cid placeholder="1234567890-abc....apps.googleusercontent.com" value="${d.clientId}">
+        <p class="muted">Notebooks sync to a <b>SuperNotes</b> folder in your Google Drive. The app uses the narrow <code>drive.file</code> permission, so it can only ever see files it created itself. Every device is pre-configured — just tap <b>Connect Google Drive</b>.</p>
+        <details><summary>Use a different Google project</summary>
+          <label class="lbl">OAuth client ID <span class="opt">— leave blank for the built-in one</span></label>
+          <input class="field" data-cid placeholder="1234567890-abc....apps.googleusercontent.com" value="${(await S.setting('gdrive.clientId')) || ''}">
+          <button data-x="save">Save client ID</button>
+        </details>
         <div class="row gap">
-          <button class="primary" data-x="save">Save keys</button>
-          <button data-x="${d.signedIn ? 'out' : 'in'}">${d.signedIn ? 'Disconnect' : 'Connect Google Drive'}</button>
+          <button class="primary" data-x="${d.signedIn ? 'out' : 'in'}">${d.signedIn ? 'Disconnect' : 'Connect Google Drive'}</button>
           <button data-x="sync">Sync now</button>
         </div>
         <p class="status" data-st>${d.status}: ${d.message}</p>
