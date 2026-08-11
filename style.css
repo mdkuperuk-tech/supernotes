@@ -315,3 +315,22 @@ textarea.ta{min-height:220px;font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,mon
 .railmini.bottom i:nth-child(2){bottom:6px;left:36px}
 .railmini.bottom i:nth-child(3){bottom:6px;left:46px}
 .muted.small{font-size:12px;margin-top:-2px}
+
+/* ---------- section tabs ---------- */
+.tabbar{display:flex;align-items:stretch;gap:5px;padding:7px 10px;background:var(--panel);
+  border-bottom:1px solid var(--line);overflow-x:auto;scrollbar-width:none;z-index:5;flex:none}
+.tabbar::-webkit-scrollbar{display:none}
+.tab{position:relative;flex:none;gap:7px;padding:7px 13px;border-radius:10px;font-size:13.5px;
+  background:var(--panel2);border:1px solid var(--line);max-width:210px}
+.tab span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tab em{font-style:normal;font-size:11px;color:var(--muted);background:var(--bg2);
+  border-radius:999px;padding:1px 6px;min-width:18px;text-align:center}
+.tab::before{content:"";position:absolute;left:10px;right:10px;bottom:-8px;height:3px;border-radius:3px;background:transparent}
+.tab.on{background:color-mix(in srgb, var(--tab) 16%, var(--panel));border-color:var(--tab);color:var(--txt)}
+.tab.on::before{background:var(--tab)}
+.tab.on em{background:color-mix(in srgb, var(--tab) 26%, transparent);color:var(--txt)}
+.tab.add{padding:7px 10px;color:var(--muted);border-style:dashed}
+.tab.add:hover{color:var(--txt);border-color:var(--accent)}
+@supports not (background: color-mix(in srgb, red 10%, blue)){
+  .tab.on{background:var(--panel);border-color:var(--accent)}
+}

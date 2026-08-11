@@ -3,13 +3,15 @@
 import * as S from './store.js';
 import * as Ink from './ink.js';
 import { drawPaper, PAGE, PAPER_COLORS, todoCheckboxes, dailyTargets, roundRect } from './papers.js';
-import { icon, el, toast, modal, confirmDialog, popover, fmtDate } from './ui.js';
+import { icon, el, toast, modal, confirmDialog, promptDialog, popover, fmtDate } from './ui.js';
 import * as Drive from './drive.js';
 import { buildPDF, canvasToJPEG, shareFile, downloadBlob } from './pdfout.js';
 import { coverSVG } from './covers.js';
 
 const GAP = 48;
 const DPR = () => Math.min(window.devicePixelRatio || 1, 2.5);
+const TAB_HUES = [214, 152, 26, 292, 338, 184, 44, 258, 6, 92];
+const escapeHTML = t => String(t).replace(/[<>&"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
 
 export const PALETTE = [
   '#1b1f27', '#3d4757', '#8a94a6', '#c0392b', '#e2554a', '#e8823a',
@@ -38,13 +40,38 @@ export class Editor {
 
   async open(notebook) {
     this.nb = notebook;
-    this.pages = await S.getPages(notebook.id);
-    if (!this.pages.length) { await this.addPage(0, true); this.pages = await S.getPages(notebook.id); }
+    this.nb.sections = this.nb.sections || [];
+    this.allPages = await S.getPages(notebook.id);
+
+    // Any page written before this notebook gained tabs belongs to the first tab.
+    if (this.nb.sections.length) {
+      const first = this.nb.sections[0].id;
+      let fixed = false;
+      for (const pg of this.allPages) if (!pg.sectionId) { pg.sectionId = first; fixed = true; }
+      if (fixed) for (const pg of this.allPages) await S.savePage(pg);
+    }
+    this.activeSection = this.nb.sections[0]?.id || null;
+    this.applyFilter();
+
+    if (!this.pages.length) { await this.addPage(0, true); }
     this.undoStack = []; this.redoStack = [];
     this.build();
     this.fitWidth();
     this.renderAll();
   }
+
+  /** Pages visible right now: the active tab's, or everything when there are no tabs. */
+  applyFilter() {
+    this.pages = this.nb.sections.length
+      ? this.allPages.filter(p => p.sectionId === this.activeSection)
+      : this.allPages.slice();
+  }
+
+  reindex() {
+    this.allPages.forEach((p, i) => { p.index = i; });
+  }
+
+  showsTabs() { return this.nb.sections.length > 0 || this.nb.type === 'tabbed'; }
 
   build() {
     this.root.innerHTML = `
@@ -62,6 +89,7 @@ export class Editor {
           <button class="icon-btn" data-a="menu" title="More">${icon('more')}</button>
         </div>
 
+        <div class="tabbar" data-el="tabs" hidden></div>
         <div class="toolrail" data-el="rail"></div>
 
         <div class="viewport" data-el="vp">
@@ -82,9 +110,10 @@ export class Editor {
 
     this.vp = this.q('vp'); this.doc = this.q('doc'); this.selEl = this.q('sel');
     this.root.querySelector('.title-btn').textContent = this.nb.title;
-    this.q('sub').textContent = { journal: 'Journal', todo: 'Daily to-do', planner: 'Daily planner', notes: 'Notebook' }[this.nb.type] || 'Notebook';
+    this.q('sub').textContent = { journal: 'Journal', todo: 'Daily to-do', planner: 'Daily planner', tabbed: 'Tabbed notebook', notes: 'Notebook' }[this.nb.type] || 'Notebook';
 
     this.buildRail();
+    this.renderTabs();
     this.root.querySelector('.ed').addEventListener('click', e => {
       const b = e.target.closest('[data-a]');
       if (b) this.action(b.dataset.a, b);
@@ -95,6 +124,117 @@ export class Editor {
   }
 
   q(n) { return this.root.querySelector(`[data-el="${n}"]`); }
+
+  /* ================= tabs / sections ================= */
+
+  renderTabs() {
+    const bar = this.q('tabs');
+    if (!bar) return;
+    if (!this.showsTabs()) { bar.hidden = true; return; }
+    bar.hidden = false;
+    const secs = this.nb.sections;
+    bar.innerHTML = secs.map(sec => {
+      const n = this.allPages.filter(p => p.sectionId === sec.id).length;
+      return `<button class="tab ${sec.id === this.activeSection ? 'on' : ''}" data-a="tab" data-sec="${sec.id}"
+        style="--tab:hsl(${sec.hue ?? 214},62%,52%)"><span>${escapeHTML(sec.name)}</span><em>${n}</em></button>`;
+    }).join('') + `<button class="tab add" data-a="addsec" title="Add a tab">${icon('plus')}</button>`;
+  }
+
+  async action_tab(btn) {
+    const id = btn.dataset.sec;
+    if (id === this.activeSection) return this.sectionMenu(btn);
+    this.activeSection = id;
+    this.applyFilter();
+    this.clearSelection();
+    this.renderTabs();
+    this.renderAll();
+    this.ty = 24; this.applyTransform();
+  }
+
+  /** Give an untabbed notebook its first tab, sweeping existing pages into it. */
+  async ensureSectioned() {
+    if (this.nb.sections.length) return;
+    const first = { id: S.uid(), name: 'Notes', hue: 214 };
+    this.nb.sections.push(first);
+    for (const pg of this.allPages) { pg.sectionId = first.id; await S.savePage(pg); }
+    this.activeSection = first.id;
+    await S.saveNotebook(this.nb);
+  }
+
+  async addSection() {
+    await this.ensureSectioned();
+    const name = await promptDialog('New tab', '', 'e.g. Operations');
+    if (!name) { this.applyFilter(); this.renderTabs(); this.renderAll(); return; }
+    const hue = TAB_HUES[this.nb.sections.length % TAB_HUES.length];
+    const sec = { id: S.uid(), name, hue };
+    this.nb.sections.push(sec);
+    await S.saveNotebook(this.nb);
+    this.activeSection = sec.id;
+    this.applyFilter();
+    await this.addPage(0, true);
+    this.renderTabs();
+    this.renderAll();
+    this.app.markDirty();
+  }
+
+  sectionMenu(btn) {
+    const secs = this.nb.sections;
+    const i = secs.findIndex(x => x.id === this.activeSection);
+    const sec = secs[i];
+    const w = el(`<div class="menu">
+      <button data-m="rename">${icon('text')}<span>Rename tab</span></button>
+      <button data-m="colour">${icon('grid')}<span>Tab colour</span></button>
+      ${i > 0 ? `<button data-m="left">${icon('back')}<span>Move left</span></button>` : ''}
+      ${i < secs.length - 1 ? `<button data-m="right">${icon('back')}<span style="transform:none">Move right</span></button>` : ''}
+      <hr>
+      <button data-m="del" class="danger">${icon('trash')}<span>Delete tab</span></button></div>`);
+    const pop = popover(btn, w);
+    w.addEventListener('click', async e => {
+      const b = e.target.closest('[data-m]'); if (!b) return;
+      pop.remove();
+      const m = b.dataset.m;
+      if (m === 'rename') {
+        const v = await promptDialog('Rename tab', sec.name);
+        if (v) { sec.name = v; await S.saveNotebook(this.nb); this.renderTabs(); this.app.markDirty(); }
+      }
+      if (m === 'colour') this.tabColour(sec);
+      if (m === 'left' || m === 'right') {
+        const j = m === 'left' ? i - 1 : i + 1;
+        secs.splice(j, 0, secs.splice(i, 1)[0]);
+        await S.saveNotebook(this.nb); this.renderTabs(); this.app.markDirty();
+      }
+      if (m === 'del') this.deleteSection(sec);
+    });
+  }
+
+  tabColour(sec) {
+    const wrap = el(`<div class="swatches">${TAB_HUES.map(h =>
+      `<button class="sw ${sec.hue === h ? 'on' : ''}" data-h="${h}" style="background:hsl(${h},62%,52%)"></button>`).join('')}</div>`);
+    const m = modal({ title: 'Tab colour', body: wrap, actions: [{ label: 'Done', primary: true }] });
+    wrap.addEventListener('click', async e => {
+      const b = e.target.closest('[data-h]'); if (!b) return;
+      sec.hue = +b.dataset.h;
+      await S.saveNotebook(this.nb);
+      wrap.querySelectorAll('.sw').forEach(x => x.classList.toggle('on', x === b));
+      this.renderTabs(); this.app.markDirty();
+    });
+  }
+
+  async deleteSection(sec) {
+    if (this.nb.sections.length <= 1) return toast('A tabbed notebook needs at least one tab');
+    const n = this.allPages.filter(p => p.sectionId === sec.id).length;
+    if (!await confirmDialog('Delete tab',
+      `Delete “${sec.name}” and its ${n} page${n === 1 ? '' : 's'}? This cannot be undone.`)) return;
+    for (const pg of this.allPages.filter(p => p.sectionId === sec.id)) await S.del('pages', pg.id);
+    this.allPages = this.allPages.filter(p => p.sectionId !== sec.id);
+    this.nb.sections = this.nb.sections.filter(x => x.id !== sec.id);
+    this.reindex();
+    for (const pg of this.allPages) await S.savePage(pg);
+    await S.saveNotebook(this.nb);
+    this.activeSection = this.nb.sections[0].id;
+    this.applyFilter();
+    this.renderTabs(); this.renderAll(); this.app.markDirty();
+  }
 
   destroy() {
     this._syncOff?.();
@@ -162,6 +302,8 @@ export class Editor {
         if (v) this.root.querySelector('.title-btn').textContent = v;
         break;
       }
+      case 'tab': this.action_tab(btn); break;
+      case 'addsec': this.addSection(); break;
       case 'tool': this.setTool(btn.dataset.tool); break;
       case 'pens':
         if (Ink.PEN_IDS.includes(this.app.tool.name)) this.penPop(btn);
@@ -272,6 +414,7 @@ export class Editor {
   menuPop(btn) {
     const items = [
       ['rail', 'Move the toolbar', 'grid'],
+      ['tabs', this.nb.sections.length ? 'Add a tab' : 'Turn on tabs', 'pages'],
       ['paper', 'Change paper', 'grid'],
       ['cover', 'Change cover', 'book'],
       ['fingerdraw', this.app.settings.fingerDraw ? 'Finger drawing: ON' : 'Finger drawing: off', 'hand'],
@@ -287,6 +430,7 @@ export class Editor {
       p.remove();
       const m = b.dataset.m;
       if (m === 'rail') this.railPicker(btn);
+      if (m === 'tabs') this.addSection();
       if (m === 'paper') this.paperPicker();
       if (m === 'cover') this.app.coverPicker(this.nb, () => {});
       if (m === 'fingerdraw') { this.app.settings.fingerDraw = !this.app.settings.fingerDraw; this.app.saveSettings(); toast('Finger drawing ' + (this.app.settings.fingerDraw ? 'on' : 'off')); }
@@ -377,15 +521,49 @@ export class Editor {
     };
   }
 
+  /** `at` is a position within the visible tab, not the whole notebook. */
   async addPage(at, silent) {
-    const p = this.newPageObj(at);
-    this.pages.splice(at, 0, p);
-    this.pages.forEach((x, i) => x.index = i);
-    for (const x of this.pages) await S.savePage(x);
-    if (!silent) { this.renderAll(); this.scrollToPage(at); this.app.markDirty(); }
+    const p = this.newPageObj(0);
+    if (this.activeSection) p.sectionId = this.activeSection;
+
+    let gi;
+    if (!this.pages.length) {
+      // first page of this tab — drop it after the last page of the preceding tab
+      const secs = this.nb.sections;
+      const si = secs.findIndex(x => x.id === this.activeSection);
+      let after = -1;
+      for (let k = 0; k <= si; k++) {
+        const last = this.allPages.map((x, idx) => x.sectionId === secs[k]?.id ? idx : -1).filter(x => x >= 0).pop();
+        if (last != null) after = Math.max(after, last);
+      }
+      gi = after + 1;
+    } else {
+      const clamped = Math.max(0, Math.min(at, this.pages.length));
+      gi = clamped >= this.pages.length
+        ? this.allPages.indexOf(this.pages[this.pages.length - 1]) + 1
+        : this.allPages.indexOf(this.pages[clamped]);
+    }
+
+    this.allPages.splice(gi, 0, p);
+    this.reindex();
+    this.applyFilter();
+    for (const x of this.allPages) await S.savePage(x);
+    if (!silent) { this.renderAll(); this.scrollToPage(this.pages.indexOf(p)); this.renderTabs(); this.app.markDirty(); }
+
     this.pushUndo({
-      undo: async () => { this.pages = this.pages.filter(x => x.id !== p.id); this.pages.forEach((x,i)=>x.index=i); await S.del('pages', p.id); for (const x of this.pages) await S.savePage(x); this.renderAll(); },
-      redo: async () => { this.pages.splice(at, 0, p); this.pages.forEach((x,i)=>x.index=i); for (const x of this.pages) await S.savePage(x); this.renderAll(); }
+      undo: async () => {
+        this.allPages = this.allPages.filter(x => x.id !== p.id);
+        this.reindex(); this.applyFilter();
+        await S.del('pages', p.id);
+        for (const x of this.allPages) await S.savePage(x);
+        this.renderAll(); this.renderTabs();
+      },
+      redo: async () => {
+        this.allPages.splice(gi, 0, p);
+        this.reindex(); this.applyFilter();
+        for (const x of this.allPages) await S.savePage(x);
+        this.renderAll(); this.renderTabs();
+      }
     });
     return p;
   }
@@ -422,13 +600,14 @@ export class Editor {
   }
 
   async deletePage(i) {
-    if (this.pages.length <= 1) return toast('A notebook needs at least one page');
+    if (this.pages.length <= 1) return toast(this.nb.sections.length ? 'A tab needs at least one page' : 'A notebook needs at least one page');
     if (!await confirmDialog('Delete page', `Delete page ${i + 1}? This cannot be undone from the shelf.`)) return;
-    const [p] = this.pages.splice(i, 1);
+    const p = this.pages[i];
+    this.allPages = this.allPages.filter(x => x.id !== p.id);
     await S.del('pages', p.id);
-    this.pages.forEach((x, k) => x.index = k);
-    for (const x of this.pages) await S.savePage(x);
-    this.renderAll(); this.app.markDirty();
+    this.reindex(); this.applyFilter();
+    for (const x of this.allPages) await S.savePage(x);
+    this.renderAll(); this.renderTabs(); this.app.markDirty();
   }
 
   clearPage() {
@@ -450,7 +629,7 @@ export class Editor {
       p._y = y;
       const d = el(`<div class="page" data-pid="${p.id}" style="top:${y}px;width:${p.w}px;height:${p.h}px">
         <canvas class="ink"></canvas><canvas class="live"></canvas><div class="ov"></div>
-        <div class="pgnum">${p.index + 1}</div></div>`);
+        <div class="pgnum">${this.pages.indexOf(p) + 1}</div></div>`);
       this.doc.appendChild(d);
       this.pageEls.set(p.id, d);
       y += p.h + GAP;
@@ -1330,6 +1509,7 @@ export class Editor {
     const items = [
       ['page-pdf', 'This page as PDF'],
       ['page-png', 'This page as image'],
+      ...(this.nb.sections.length ? [['sec-pdf', 'This tab as PDF']] : []),
       ['nb-pdf', 'Whole notebook as PDF'],
       ['sep', ''],
       ['drive', 'Save PDF to Google Drive'],
@@ -1342,9 +1522,10 @@ export class Editor {
       p.remove();
       const k = b.dataset.x;
       if (k === 'page-pdf') this.exportPDF([this.pages[this.currentPageIndex()]], false);
-      if (k === 'nb-pdf') this.exportPDF(this.pages, true);
+      if (k === 'sec-pdf') this.exportPDF(this.pages, true);
+      if (k === 'nb-pdf') this.exportPDF(this.allPages, true);
       if (k === 'page-png') this.exportPNG();
-      if (k === 'drive') this.exportPDF(this.pages, true, 'drive');
+      if (k === 'drive') this.exportPDF(this.allPages, true, 'drive');
       if (k === 'backup') {
         const bundle = await S.exportNotebook(this.nb.id);
         downloadBlob(new Blob([JSON.stringify(bundle)], { type: 'application/json' }), `${this.nb.title}.snb.json`);
@@ -1411,14 +1592,14 @@ export class Editor {
     const body = el('<div class="thumbs"></div>');
     const m = modal({ title: 'Pages', body, wide: true, actions: [{ label: 'Done', primary: true }] });
     for (const p of this.pages) {
-      const t = el(`<button class="thumb"><canvas width="150" height="212"></canvas><span>${p.index + 1}</span></button>`);
+      const t = el(`<button class="thumb"><canvas width="150" height="212"></canvas><span>${this.pages.indexOf(p) + 1}</span></button>`);
       body.appendChild(t);
       const ctx = t.querySelector('canvas').getContext('2d');
       ctx.scale(150 / p.w, 212 / p.h);
       drawPaper(ctx, p);
       for (const o of p.objects) if (o.type === 'image') { const img = this._imgCache?.get(o.blobId); if (img) ctx.drawImage(img, o.x, o.y, o.w, o.h); }
       for (const s of p.strokes) Ink.drawStroke(ctx, s);
-      t.onclick = () => { m.close(); this.scrollToPage(p.index); };
+      t.onclick = () => { m.close(); this.scrollToPage(this.pages.indexOf(p)); };
     }
     const add = el(`<button class="thumb add">${icon('plus')}<span>Add page</span></button>`);
     add.onclick = async () => { m.close(); await this.addPage(this.pages.length); this.scrollToPage(this.pages.length - 1); };

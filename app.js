@@ -92,7 +92,7 @@ class App {
     const c = el(`<div class="card">
       <button class="cover" data-open>
         <img alt="" src="${coverDataURI(nb.cover || {}, { title: nb.title })}">
-        <span class="type">${{ journal: 'Journal', todo: 'To-do', planner: 'Planner', notes: 'Notes' }[nb.type] || 'Notes'}</span>
+        <span class="type">${{ journal: 'Journal', todo: 'To-do', planner: 'Planner', tabbed: 'Tabs', notes: 'Notes' }[nb.type] || 'Notes'}</span>
       </button>
       <div class="meta"><strong></strong><span>${fmtShort(nb.updatedAt || Date.now())}</span></div>
       <button class="icon-btn tiny more" data-more>${icon('more')}</button>
@@ -154,7 +154,8 @@ class App {
       ['notes', 'Notebook', 'Free-form pages for anything', 'book'],
       ['journal', 'Journal', 'Dated entries, gratitude, voice notes', 'journal'],
       ['todo', 'Daily to-do', 'Top 3 personal, top 3 business, everything else', 'todo'],
-      ['planner', 'Daily planner', 'Schedule, water, meals, tasks, notes', 'grid']
+      ['planner', 'Daily planner', 'Schedule, water, meals, tasks, notes', 'grid'],
+      ['tabbed', 'Tabbed notebook', 'Dividers like HR, Operations, Finance — pages under each', 'pages']
     ];
     let choice = { type: 'notes', paper: 'lined', cover: { design: 'aurora', hue: HUES[Math.floor(Math.random() * HUES.length)] } };
     const body = el(`<div class="newnb">
@@ -162,6 +163,8 @@ class App {
       <input class="field" data-t placeholder="e.g. Client Notes" value="">
       <label class="lbl">Type</label>
       <div class="types">${types.map(([id, n, d, ic]) => `<button class="type-opt ${id === 'notes' ? 'on' : ''}" data-type="${id}">${icon(ic)}<strong>${n}</strong><span>${d}</span></button>`).join('')}</div>
+      <label class="lbl" data-tabslbl style="display:none">Tabs <span class="opt">— separated by commas, rename any time</span></label>
+      <input class="field" data-tabs placeholder="HR, Operations, Finance" value="HR, Operations, Finance" style="display:none">
       <label class="lbl" data-paperlbl>Paper</label>
       <div class="paper-grid" data-papergrid>${PAPER_KINDS.filter(k => !['journal','todo','daily'].includes(k.id)).map(k =>
         `<button type="button" class="paper-opt ${k.id === 'lined' ? 'on' : ''}" data-paper="${k.id}"><canvas width="112" height="158"></canvas><span>${k.label}</span></button>`).join('')}</div>
@@ -185,8 +188,11 @@ class App {
         { label: 'Choose cover →', primary: true, onClick: () => {
             const title = body.querySelector('[data-t]').value.trim() || ({ notes: 'Notebook', journal: 'Journal', todo: 'Daily To-Do' })[choice.type];
             const paper = choice.type === 'journal' ? 'journal' : choice.type === 'todo' ? 'todo' : choice.type === 'planner' ? 'daily' : paperKind;
+            const tabNames = choice.type === 'tabbed'
+              ? body.querySelector('[data-tabs]').value.split(',').map(x => x.trim()).filter(Boolean)
+              : null;
             this.coverPicker({ title, cover: { ...choice.cover, title } }, async nbLike => {
-              const nb = await this.createNotebook({ title, type: choice.type, cover: nbLike.cover, paper });
+              const nb = await this.createNotebook({ title, type: choice.type, cover: nbLike.cover, paper, tabNames });
               this.openNotebook(nb);
             }, true);
           } }
@@ -196,28 +202,40 @@ class App {
       const t = e.target.closest('[data-type]'); if (!t) return;
       choice.type = t.dataset.type;
       body.querySelectorAll('.type-opt').forEach(x => x.classList.toggle('on', x === t));
-      const show = choice.type === 'notes';
+      const show = choice.type === 'notes' || choice.type === 'tabbed';
       body.querySelector('[data-papergrid]').style.display = show ? '' : 'none';
       body.querySelector('[data-paperlbl]').style.display = show ? '' : 'none';
+      const tabbed = choice.type === 'tabbed';
+      body.querySelector('[data-tabs]').style.display = tabbed ? '' : 'none';
+      body.querySelector('[data-tabslbl]').style.display = tabbed ? '' : 'none';
     });
   }
 
-  async createNotebook({ title, type, cover, paper }, open = true) {
+  async createNotebook({ title, type, cover, paper, tabNames }, open = true) {
     const nb = {
       id: S.uid(), title, type: type || 'notes',
       cover: { design: cover?.design || 'aurora', hue: cover?.hue ?? 214, title, subtitle: cover?.subtitle || '' },
       defaultPaper: { kind: paper || 'lined', color: 'white' },
+      sections: [],
       createdAt: Date.now(), updatedAt: Date.now(), dirty: true
     };
+    const names = (tabNames && tabNames.length) ? tabNames : (type === 'tabbed' ? ['Notes'] : []);
+    nb.sections = names.map((n, i) => ({ id: S.uid(), name: n, hue: TAB_HUES[i % TAB_HUES.length] }));
     await S.put('notebooks', nb);
-    const p = {
-      id: S.uid(), notebookId: nb.id, index: 0, w: 1240, h: 1754,
-      paper: { ...nb.defaultPaper },
-      strokes: [], objects: [],
-      meta: ['journal', 'todo', 'planner'].includes(type) ? { date: new Date().toISOString(), dateLabel: fmtDate(new Date()), checks: {} } : {},
-      createdAt: Date.now()
-    };
-    await S.put('pages', p);
+    // one starting page per tab, so every tab opens onto something
+    const seed = nb.sections.length ? nb.sections : [null];
+    let idx = 0;
+    for (const sec of seed) {
+      const p = {
+        id: S.uid(), notebookId: nb.id, index: idx++, w: 1240, h: 1754,
+        paper: { ...nb.defaultPaper },
+        sectionId: sec ? sec.id : undefined,
+        strokes: [], objects: [],
+        meta: ['journal', 'todo', 'planner'].includes(type) ? { date: new Date().toISOString(), dateLabel: fmtDate(new Date()), checks: {} } : {},
+        createdAt: Date.now()
+      };
+      await S.put('pages', p);
+    }
     this.markDirty();
     return nb;
   }
@@ -429,6 +447,7 @@ class App {
 }
 
 const mb = n => n > 1e9 ? (n / 1e9).toFixed(2) + ' GB' : (n / 1e6).toFixed(1) + ' MB';
+const TAB_HUES = [214, 152, 26, 292, 338, 184, 44, 258, 6, 92];
 
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); window.__bip = e; });
 
