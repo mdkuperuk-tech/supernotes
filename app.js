@@ -164,7 +164,7 @@ class App {
       <label class="lbl">Type</label>
       <div class="types">${types.map(([id, n, d, ic]) => `<button class="type-opt ${id === 'notes' ? 'on' : ''}" data-type="${id}">${icon(ic)}<strong>${n}</strong><span>${d}</span></button>`).join('')}</div>
       <label class="lbl" data-tabslbl style="display:none">Tabs <span class="opt">— separated by commas, rename any time</span></label>
-      <input class="field" data-tabs placeholder="HR, Operations, Finance" value="HR, Operations, Finance" style="display:none">
+      <input class="field" data-tabs placeholder="HR, Operations, Finance" value="" autocomplete="off" style="display:none">
       <label class="lbl" data-paperlbl>Paper</label>
       <div class="paper-grid" data-papergrid>${PAPER_KINDS.filter(k => !['journal','todo','daily'].includes(k.id)).map(k =>
         `<button type="button" class="paper-opt ${k.id === 'lined' ? 'on' : ''}" data-paper="${k.id}"><canvas width="112" height="158"></canvas><span>${k.label}</span></button>`).join('')}</div>
@@ -186,7 +186,9 @@ class App {
       actions: [
         { label: 'Cancel' },
         { label: 'Choose cover →', primary: true, onClick: () => {
-            const title = body.querySelector('[data-t]').value.trim() || ({ notes: 'Notebook', journal: 'Journal', todo: 'Daily To-Do' })[choice.type];
+            const title = body.querySelector('[data-t]').value.trim()
+              || ({ notes: 'Notebook', journal: 'Journal', todo: 'Daily To-Do', planner: 'Daily Planner', tabbed: 'Tabbed Notebook' })[choice.type]
+              || 'Notebook';
             const paper = choice.type === 'journal' ? 'journal' : choice.type === 'todo' ? 'todo' : choice.type === 'planner' ? 'daily' : paperKind;
             const tabNames = choice.type === 'tabbed'
               ? body.querySelector('[data-tabs]').value.split(',').map(x => x.trim()).filter(Boolean)
@@ -206,8 +208,10 @@ class App {
       body.querySelector('[data-papergrid]').style.display = show ? '' : 'none';
       body.querySelector('[data-paperlbl]').style.display = show ? '' : 'none';
       const tabbed = choice.type === 'tabbed';
-      body.querySelector('[data-tabs]').style.display = tabbed ? '' : 'none';
+      const tabsField = body.querySelector('[data-tabs]');
+      tabsField.style.display = tabbed ? '' : 'none';
       body.querySelector('[data-tabslbl]').style.display = tabbed ? '' : 'none';
+      if (tabbed) setTimeout(() => { tabsField.focus(); tabsField.select(); }, 0);
     });
   }
 
