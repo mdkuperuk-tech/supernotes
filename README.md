@@ -110,6 +110,12 @@ for half a second before lifting — it snaps to a clean shape. The Shape tool d
 music staff, storyboard, journal and to-do templates, in six paper colours including a dark one.
 Change one page or the whole notebook.
 
+**Tabbed notebooks.** A notebook divided the way a ring binder is. Name the dividers when you
+create it — `HR, Operations, Finance, Matt` — and each one holds its own run of pages, in any
+paper type you like. The tab strip sits above the page; tap a tab to switch, long-press or use
+the tab menu to rename, recolour, reorder or delete one. Export gives you the choice of just the
+current tab or the whole notebook.
+
 **Journal.** Dated pages with a gratitude block, highlight-of-the-day, open notes and a mood
 strip. Voice notes and photos drop straight onto the page.
 
