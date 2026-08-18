@@ -1,4 +1,6 @@
 /* papers.js — page backgrounds drawn straight to canvas (vector, so they stay crisp at any zoom) */
+import { weekly1, weekly2, weeklyTargets, monthPaper, monthTargets, goalsPaper, goalsTargets } from './weekly.js';
+export { weeklyTargets, monthTargets, goalsTargets } from './weekly.js';
 
 export const PAGE = { w: 1240, h: 1754 };          // A4 at 150 dpi
 export const PAGE_LANDSCAPE = { w: 1754, h: 1240 };
@@ -24,6 +26,10 @@ export const PAPER_KINDS = [
   { id: 'cornell', label: 'Cornell' },
   { id: 'planner', label: 'Hour planner' },
   { id: 'daily',   label: 'Daily planner' },
+  { id: 'week1',   label: 'Weekly — plan' },
+  { id: 'week2',   label: 'Weekly — trackers' },
+  { id: 'month',   label: 'Monthly calendar' },
+  { id: 'goals',   label: 'SMART goals' },
   { id: 'music',   label: 'Music staff' },
   { id: 'storyboard', label: 'Storyboard' },
   { id: 'journal', label: 'Journal' },
@@ -55,6 +61,10 @@ export function drawPaper(ctx, page) {
     case 'journal': journalPaper(ctx, w, h, c, page); break;
     case 'todo':    todoPaper(ctx, w, h, c, page); break;
     case 'daily':   dailyPaper(ctx, w, h, c, page); break;
+    case 'week1':   weekly1(ctx, w, h, c, page); break;
+    case 'week2':   weekly2(ctx, w, h, c, page); break;
+    case 'month':   monthPaper(ctx, w, h, c, page); break;
+    case 'goals':   goalsPaper(ctx, w, h, c, page); break;
     default: break;
   }
   ctx.restore();
@@ -369,6 +379,21 @@ function fade(hex, a) {
   const h = hex.replace('#', '');
   const n = parseInt(h.length === 3 ? h.split('').map(x => x + x).join('') : h, 16);
   return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+}
+
+/** Every kind of tappable target on a page, in page coordinates.
+ *  One source of truth for the editor overlay, the canvas renderer and the PDF. */
+export const INTERACTIVE = ['todo', 'daily', 'week1', 'week2', 'month', 'goals'];
+export function pageTargets(page) {
+  switch (page?.paper?.kind) {
+    case 'daily': return { ...dailyTargets(), pips: [] };
+    case 'todo':  return { boxes: todoCheckboxes(page), glasses: [], pips: [] };
+    case 'week1':
+    case 'week2': return { glasses: [], ...weeklyTargets(page) };
+    case 'month': return { glasses: [], ...monthTargets(page) };
+    case 'goals': return { glasses: [], ...goalsTargets(page) };
+    default:      return { boxes: [], glasses: [], pips: [] };
+  }
 }
 
 /* interactive checkbox positions for to-do pages, in page coordinates */

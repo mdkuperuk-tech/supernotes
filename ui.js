@@ -35,7 +35,10 @@ export const ICON = {
   more:       '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>',
   zoomin:     '<circle cx="11" cy="11" r="7"/><path d="M11 8v6M8 11h6"/><path d="M20 20l-3.5-3.5"/>',
   zoomout:    '<circle cx="11" cy="11" r="7"/><path d="M8 11h6"/><path d="M20 20l-3.5-3.5"/>',
-  grid:       '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>'
+  grid:       '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
+  calendar:   '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>',
+  target:     '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="1"/>',
+  week:       '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M7 14h3M7 17h3M14 14h3M14 17h3"/>'
 };
 
 export function icon(name, cls = '') {
@@ -132,3 +135,31 @@ export function popover(anchor, content, opts = {}) {
 export const fmtDate = d => new Date(d).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
 export const fmtShort = d => new Date(d).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 export const todayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+
+/* ---- week / month helpers. Weeks run Monday → Sunday. ---- */
+export function mondayOf(d = new Date()) {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  x.setDate(x.getDate() - ((x.getDay() + 6) % 7));   // Sunday(0) → back 6
+  return x;
+}
+export const weekKey = (d = new Date()) => todayKey(mondayOf(d));
+export function fmtWeek(d = new Date()) {
+  const a = mondayOf(d), b = new Date(a); b.setDate(a.getDate() + 6);
+  const sameMonth = a.getMonth() === b.getMonth();
+  const day = x => x.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  const dayNoMonth = x => x.toLocaleDateString(undefined, { day: 'numeric' });
+  return `${day(a)} – ${sameMonth ? dayNoMonth(b) : day(b)}, ${b.getFullYear()}`;
+}
+export const fmtWeekLong = (d = new Date()) =>
+  `Week of ${mondayOf(d).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}`;
+export const fmtMonth = (d = new Date()) => new Date(d).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+export function monthGrid(d = new Date()) {
+  const x = new Date(d), y = x.getFullYear(), m = x.getMonth();
+  const first = new Date(y, m, 1);
+  return { monthFirstDow: (first.getDay() + 6) % 7, monthDays: new Date(y, m + 1, 0).getDate() };
+}
+export function fmtQuarter(d = new Date()) {
+  const x = new Date(d);
+  return `Q${Math.floor(x.getMonth() / 3) + 1} ${x.getFullYear()}`;
+}

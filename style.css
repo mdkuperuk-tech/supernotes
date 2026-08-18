@@ -144,6 +144,10 @@ button.ghost{background:transparent;border-color:transparent}
   border:1px solid rgba(76,141,255,.5);color:#2f7fd1;font-size:14px;font-weight:600;gap:8px}
 .apin em{font-style:normal;opacity:.65;font-size:12.5px}
 .apin.playing{background:rgba(76,141,255,.24)}
+/* invisible tap area over a target the page canvas already draws */
+.hit{position:absolute;padding:0;border:none;background:transparent;border-radius:6px;
+  -webkit-tap-highlight-color:transparent}
+.hit:active{background:rgba(76,141,255,.16)}
 .tick{position:absolute;padding:0;border-radius:6px;border:1.6px solid #b9c4d4;background:transparent;
   display:grid;place-items:center}
 .tick.on{background:var(--ok);border-color:var(--ok);color:#fff}
@@ -160,9 +164,13 @@ button.ghost{background:transparent;border-color:transparent}
   background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:4px;box-shadow:var(--sh)}
 .selbar button{padding:8px;border:none;background:transparent;border-radius:9px}
 
-.statusbar{display:flex;align-items:center;gap:8px;padding:8px 12px calc(8px + var(--safe-b));
-  background:var(--panel);border-top:1px solid var(--line);font-size:13px}
+/* Sits directly under the top bar, never at the bottom edge — a resting wrist
+   must never be able to reach "+ Page" or the zoom controls while writing. */
+.statusbar{display:flex;align-items:center;gap:8px;padding:6px 12px;
+  background:var(--panel);border-bottom:1px solid var(--line);font-size:13px}
 .pageno{color:var(--muted);font-variant-numeric:tabular-nums}
+/* keep the page clear of the home indicator without putting a control there */
+.viewport{padding-bottom:var(--safe-b)}
 
 /* ---------- popovers, modals, toasts ---------- */
 .pop{position:fixed;z-index:60;background:var(--panel);border:1px solid var(--line);border-radius:14px;
@@ -276,6 +284,7 @@ textarea.ta{min-height:220px;font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,mon
 
 .quick{grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
 .qcard.p .ic{color:var(--ok)}
+.qcard.w .ic{color:#7c5cff}
 
 /* paper thumbnails inside the new-notebook sheet */
 .newnb .paper-grid{max-height:270px;overflow:auto;padding:2px}

@@ -1,9 +1,9 @@
 /* SuperNotes service worker — offline shell */
-const V = 'supernotes-v6';
+const V = 'supernotes-v7';
 const SHELL = [
   './', './index.html', './manifest.webmanifest',
   './style.css',
-  './app.js', './editor.js', './ink.js', './papers.js',
+  './app.js', './editor.js', './ink.js', './papers.js', './weekly.js',
   './covers.js', './store.js', './drive.js', './pdfout.js', './ui.js',
   './icon-192.png', './icon-512.png', './icon-180.png'
 ];

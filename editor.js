@@ -2,8 +2,26 @@
 
 import * as S from './store.js';
 import * as Ink from './ink.js';
-import { drawPaper, PAGE, PAPER_COLORS, todoCheckboxes, dailyTargets, roundRect } from './papers.js';
-import { icon, el, toast, modal, confirmDialog, promptDialog, popover, fmtDate } from './ui.js';
+import { drawPaper, PAGE, PAPER_COLORS, todoCheckboxes, dailyTargets, pageTargets, INTERACTIVE, roundRect } from './papers.js';
+import { icon, el, toast, modal, confirmDialog, promptDialog, popover, fmtDate,
+         mondayOf, weekKey, fmtWeek, fmtWeekLong, fmtMonth, monthGrid, fmtQuarter } from './ui.js';
+
+/** Stamps a new page with whatever labels its paper kind needs. */
+export function pageMeta(kind, now = new Date(), when = now) {
+  const base = { checks: {} };
+  if (kind === 'week1' || kind === 'week2') {
+    return { ...base, date: mondayOf(when).toISOString(), weekKey: weekKey(when),
+             weekPage: kind === 'week1' ? 1 : 2,
+             weekLabel: kind === 'week1' ? fmtWeekLong(when) : fmtWeek(when) };
+  }
+  if (kind === 'month') {
+    return { ...base, date: new Date(when).toISOString(), monthLabel: fmtMonth(when), ...monthGrid(when) };
+  }
+  if (kind === 'goals') {
+    return { ...base, date: new Date(when).toISOString(), goalLabel: fmtQuarter(when), checks: { per_1: true } };
+  }
+  return {};
+}
 import * as Drive from './drive.js';
 import { buildPDF, canvasToJPEG, shareFile, downloadBlob } from './pdfout.js';
 import { coverSVG } from './covers.js';
@@ -89,14 +107,6 @@ export class Editor {
           <button class="icon-btn" data-a="menu" title="More">${icon('more')}</button>
         </div>
 
-        <div class="tabbar" data-el="tabs" hidden></div>
-        <div class="toolrail" data-el="rail"></div>
-
-        <div class="viewport" data-el="vp">
-          <div class="doc" data-el="doc"></div>
-          <div class="selframe" data-el="sel" hidden></div>
-        </div>
-
         <div class="statusbar">
           <button class="chip" data-a="zoomout">${icon('zoomout')}</button>
           <button class="chip zlabel" data-a="zoomreset">100%</button>
@@ -106,11 +116,19 @@ export class Editor {
           <span class="spacer"></span>
           <button class="chip" data-a="addpage">${icon('plus')} Page</button>
         </div>
+
+        <div class="tabbar" data-el="tabs" hidden></div>
+        <div class="toolrail" data-el="rail"></div>
+
+        <div class="viewport" data-el="vp">
+          <div class="doc" data-el="doc"></div>
+          <div class="selframe" data-el="sel" hidden></div>
+        </div>
       </div>`;
 
     this.vp = this.q('vp'); this.doc = this.q('doc'); this.selEl = this.q('sel');
     this.root.querySelector('.title-btn').textContent = this.nb.title;
-    this.q('sub').textContent = { journal: 'Journal', todo: 'Daily to-do', planner: 'Daily planner', tabbed: 'Tabbed notebook', notes: 'Notebook' }[this.nb.type] || 'Notebook';
+    this.q('sub').textContent = { journal: 'Journal', todo: 'Daily to-do', planner: 'Daily planner', weekly: 'Weekly planner', tabbed: 'Tabbed notebook', notes: 'Notebook' }[this.nb.type] || 'Notebook';
 
     this.buildRail();
     this.renderTabs();
@@ -421,8 +439,11 @@ export class Editor {
       ['clearpage', 'Clear this page', 'trash'],
       ['delpage', 'Delete this page', 'trash']
     ];
+    items.unshift(['addgoals', 'Add a SMART goals page', 'target']);
+    items.unshift(['addmonth', 'Add a month calendar', 'calendar']);
     if (this.nb.type === 'todo' || this.nb.type === 'planner') items.unshift(['carry', 'Carry unfinished to a new day', 'todo']);
     if (['journal', 'todo', 'planner'].includes(this.nb.type)) items.unshift(['newday', "New page for today", 'plus']);
+    items.unshift(['newweek', 'Add a week (two pages)', 'plus']);
     const wrap = el(`<div class="menu">${items.map(([a, l, ic]) => `<button data-m="${a}">${icon(ic)}<span>${l}</span></button>`).join('')}</div>`);
     const p = popover(btn, wrap);
     wrap.addEventListener('click', async e => {
@@ -438,6 +459,9 @@ export class Editor {
       if (m === 'delpage') this.deletePage(this.currentPageIndex());
       if (m === 'newday') this.newDatedPage();
       if (m === 'carry') this.carryForward();
+      if (m === 'newweek') this.newWeekSpread();
+      if (m === 'addmonth') this.newTemplatePage('month');
+      if (m === 'addgoals') this.newTemplatePage('goals');
     });
   }
 
@@ -485,7 +509,16 @@ export class Editor {
       const k = e.target.closest('[data-k]'), pc = e.target.closest('[data-pc]');
       const applyAll = body.querySelector('[data-all]').checked;
       const targets = applyAll ? this.pages : [page];
-      if (k) { targets.forEach(p => p.paper.kind = k.dataset.k); }
+      if (k) {
+        const kind = k.dataset.k;
+        targets.forEach(p => {
+          p.paper.kind = kind;
+          // switching onto a dated template fills in its labels, keeping any ticks
+          const add = pageMeta(kind, new Date(), p.meta?.date ? new Date(p.meta.date) : new Date());
+          if (Object.keys(add).length) p.meta = { ...p.meta, ...add, checks: p.meta?.checks || add.checks || {} };
+        });
+        this.pages.forEach(p => this.syncOverlay(p));
+      }
       else if (pc) { targets.forEach(p => p.paper.color = pc.dataset.pc); }
       else return;
       for (const p of targets) await S.savePage(p);
@@ -509,14 +542,16 @@ export class Editor {
     if (type === 'journal') paper.kind = 'journal';
     if (type === 'todo') paper.kind = 'todo';
     if (type === 'planner') paper.kind = 'daily';
+    if (type === 'weekly' && !paperOverride) paper.kind = 'week1';
     const now = new Date();
+    const dated = ['journal', 'todo', 'planner'].includes(type);
     return {
       id: S.uid(), notebookId: this.nb.id, index,
       w: PAGE.w, h: PAGE.h, paper,
       strokes: [], objects: [],
-      meta: (type === 'journal' || type === 'todo' || type === 'planner')
+      meta: dated
         ? { date: now.toISOString(), dateLabel: fmtDate(now), checks: {} }
-        : {},
+        : pageMeta(paper.kind, now),
       createdAt: Date.now()
     };
   }
@@ -574,6 +609,43 @@ export class Editor {
     p.meta = { date: now.toISOString(), dateLabel: fmtDate(now), checks: {} };
     await S.savePage(p);
     this.renderAll(); this.scrollToPage(this.pages.length - 1);
+  }
+
+  /** Adds one page of a given template kind at the end of the current tab. */
+  async newTemplatePage(kind, when = new Date()) {
+    const p = await this.addPage(this.pages.length, true);
+    p.paper = { ...p.paper, kind };
+    p.meta = pageMeta(kind, new Date(), when);
+    await S.savePage(p);
+    this.renderAll(); this.renderTabs();
+    this.scrollToPage(this.pages.indexOf(p));
+    this.app.markDirty();
+    return p;
+  }
+
+  /** Adds a fresh two-page weekly spread, dated to `when` (defaults to next unused week). */
+  async newWeekSpread(when) {
+    if (!when) {
+      const used = new Set(this.allPages.map(p => p.meta?.weekKey).filter(Boolean));
+      when = mondayOf(new Date());
+      // walk forward until we land on a week that isn't already in the notebook
+      for (let guard = 0; guard < 520 && used.has(weekKey(when)); guard++) {
+        when = new Date(when); when.setDate(when.getDate() + 7);
+      }
+    }
+    const made = [];
+    for (const kind of ['week1', 'week2']) {
+      const p = await this.addPage(this.pages.length, true);
+      p.paper = { ...p.paper, kind };
+      p.meta = pageMeta(kind, new Date(), when);
+      await S.savePage(p);
+      made.push(p);
+    }
+    this.renderAll(); this.renderTabs();
+    this.scrollToPage(this.pages.indexOf(made[0]));
+    this.app.markDirty();
+    toast(`Added ${fmtWeek(when)}`);
+    return made;
   }
 
   async carryForward() {
@@ -698,29 +770,40 @@ export class Editor {
     const ov = d.querySelector('.ov');
     ov.innerHTML = '';
 
-    if (p.paper.kind === 'todo' || p.paper.kind === 'daily') {
+    if (INTERACTIVE.includes(p.paper.kind)) {
       const checks = p.meta.checks || (p.meta.checks = {});
-      const targets = p.paper.kind === 'daily' ? dailyTargets() : { boxes: todoCheckboxes(p), glasses: [] };
-      for (const g of targets.glasses) {
+      const targets = pageTargets(p);
+      /* Older to-do and daily pages paint their tick/fill in the DOM. The weekly,
+         month and goals pages paint theirs onto the page canvas instead, so screen
+         and exported PDF can never drift apart — those get invisible hit areas. */
+      const onCanvas = !['todo', 'daily'].includes(p.paper.kind);
+      const flip = (key, after) => {
+        checks[key] = !checks[key];
+        after(!!checks[key]);
+        if (onCanvas) this.renderPage(p);
+        this.queueSave(p);
+      };
+      for (const g of (targets.glasses || [])) {
         const n = el(`<button class="glass ${checks[g.key] ? 'on' : ''}" style="left:${g.x}px;top:${g.y}px;width:${g.s}px;height:${g.s}px"></button>`);
-        n.onclick = ev => {
-          ev.stopPropagation();
-          checks[g.key] = !checks[g.key];
-          n.classList.toggle('on', !!checks[g.key]);
-          this.queueSave(p);
-        };
+        n.onclick = ev => { ev.stopPropagation(); flip(g.key, on => n.classList.toggle('on', on)); };
         ov.appendChild(n);
       }
-      for (const b of targets.boxes) {
-        const n = el(`<button class="tick ${checks[b.key] ? 'on' : ''}" style="left:${b.x}px;top:${b.y}px;width:${b.s}px;height:${b.s}px">${checks[b.key] ? icon('check') : ''}</button>`);
-        n.onclick = ev => {
-          ev.stopPropagation();
-          checks[b.key] = !checks[b.key];
-          n.classList.toggle('on', !!checks[b.key]);
-          n.innerHTML = checks[b.key] ? icon('check') : '';
-          this.queueSave(p);
-        };
+      for (const pip of (targets.pips || [])) {
+        const n = el(`<button class="hit" style="left:${pip.x - 3}px;top:${pip.y - 3}px;width:${pip.s + 6}px;height:${pip.s + 6}px"></button>`);
+        n.onclick = ev => { ev.stopPropagation(); flip(pip.key, () => {}); };
         ov.appendChild(n);
+      }
+      for (const b of (targets.boxes || [])) {
+        const w = b.w || b.s;
+        if (onCanvas) {
+          const n = el(`<button class="hit" style="left:${b.x - 3}px;top:${b.y - 3}px;width:${w + 6}px;height:${b.s + 6}px"></button>`);
+          n.onclick = ev => { ev.stopPropagation(); flip(b.key, () => {}); };
+          ov.appendChild(n);
+        } else {
+          const n = el(`<button class="tick ${checks[b.key] ? 'on' : ''}" style="left:${b.x}px;top:${b.y}px;width:${w}px;height:${b.s}px">${checks[b.key] ? icon('check') : ''}</button>`);
+          n.onclick = ev => { ev.stopPropagation(); flip(b.key, on => { n.classList.toggle('on', on); n.innerHTML = on ? icon('check') : ''; }); };
+          ov.appendChild(n);
+        }
       }
     }
 
@@ -897,7 +980,7 @@ export class Editor {
   }
 
   onDown(e) {
-    if (e.target.closest('.tbox, .apin, .tick, .glass, .selframe')) return;
+    if (e.target.closest('.tbox, .apin, .tick, .glass, .hit, .selframe')) return;
     if (e.pointerType === 'pen') { this._penDown = true; this._lastPenAt = performance.now(); }
     if (this.isPalm(e)) return;
     this._pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
@@ -1444,7 +1527,8 @@ export class Editor {
       if (img) { ctx.save(); ctx.translate(o.x + o.w / 2, o.y + o.h / 2); if (o.rot) ctx.rotate(o.rot); ctx.drawImage(img, -o.w / 2, -o.h / 2, o.w, o.h); ctx.restore(); }
     }
     for (const s of page.strokes) Ink.drawStroke(ctx, s);
-    // ticked boxes and filled water glasses
+    // Ticks and fills for to-do / daily, whose marks live in the DOM rather than on
+    // the canvas. Weekly, month and goals pages already drew theirs in drawPaper().
     if (page.paper.kind === 'todo' || page.paper.kind === 'daily') {
       const checks = page.meta?.checks || {};
       const t = page.paper.kind === 'daily' ? dailyTargets() : { boxes: todoCheckboxes(page), glasses: [] };

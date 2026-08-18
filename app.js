@@ -2,10 +2,11 @@
 
 import * as S from './store.js';
 import * as Drive from './drive.js';
-import { Editor } from './editor.js';
+import { Editor, pageMeta } from './editor.js';
 import { COVER_IDS, coverDataURI, HUES } from './covers.js';
 import { PAPER_KINDS, drawPaper, PAGE } from './papers.js';
-import { icon, el, toast, modal, confirmDialog, promptDialog, popover, fmtDate, fmtShort, todayKey } from './ui.js';
+import { icon, el, toast, modal, confirmDialog, promptDialog, popover, fmtDate, fmtShort, todayKey,
+         mondayOf, weekKey, fmtWeek } from './ui.js';
 
 class App {
   constructor() {
@@ -19,6 +20,13 @@ class App {
     document.getElementById('boot')?.remove();
     const t = await S.setting('tool'); if (t) this.tool = { ...this.tool, ...t };
     const s = await S.setting('settings'); if (s) this.settings = { ...this.settings, ...s };
+    // A bottom toolbar sits right under a resting wrist. Move it out of the way once;
+    // it can still be put back from the notebook menu.
+    if (this.settings.railPos === 'bottom' && !this.settings.railMigrated) {
+      this.settings.railPos = 'top';
+      this.settings.railMigrated = true;
+      this.saveSettings();
+    }
 
     await Drive.init();
     Drive.onChange(() => this.paintSyncChip());
@@ -62,6 +70,7 @@ class App {
         </header>
 
         <div class="quick">
+          <button class="qcard w" data-a="quick-weekly">${icon('week')}<div><strong>This week's planner</strong><span>${fmtWeek(new Date())} · gym · intake · goals</span></div></button>
           <button class="qcard j" data-a="quick-journal">${icon('journal')}<div><strong>Today's journal</strong><span>${fmtDate(new Date())}</span></div></button>
           <button class="qcard t" data-a="quick-todo">${icon('todo')}<div><strong>Today's to-do</strong><span>Top 3 personal · Top 3 business</span></div></button>
           <button class="qcard p" data-a="quick-planner">${icon('grid')}<div><strong>Today's planner</strong><span>Schedule · water · meals · notes</span></div></button>
@@ -81,6 +90,7 @@ class App {
       if (a === 'new') this.newNotebookFlow();
       if (a === 'settings') this.settingsPanel();
       if (a === 'sync') this.syncNow();
+      if (a === 'quick-weekly') this.openToday('weekly');
       if (a === 'quick-journal') this.openToday('journal');
       if (a === 'quick-todo') this.openToday('todo');
       if (a === 'quick-planner') this.openToday('planner');
@@ -92,7 +102,7 @@ class App {
     const c = el(`<div class="card">
       <button class="cover" data-open>
         <img alt="" src="${coverDataURI(nb.cover || {}, { title: nb.title })}">
-        <span class="type">${{ journal: 'Journal', todo: 'To-do', planner: 'Planner', tabbed: 'Tabs', notes: 'Notes' }[nb.type] || 'Notes'}</span>
+        <span class="type">${{ journal: 'Journal', todo: 'To-do', planner: 'Planner', weekly: 'Weekly', tabbed: 'Tabs', notes: 'Notes' }[nb.type] || 'Notes'}</span>
       </button>
       <div class="meta"><strong></strong><span>${fmtShort(nb.updatedAt || Date.now())}</span></div>
       <button class="icon-btn tiny more" data-more>${icon('more')}</button>
@@ -155,6 +165,7 @@ class App {
       ['journal', 'Journal', 'Dated entries, gratitude, voice notes', 'journal'],
       ['todo', 'Daily to-do', 'Top 3 personal, top 3 business, everything else', 'todo'],
       ['planner', 'Daily planner', 'Schedule, water, meals, tasks, notes', 'grid'],
+      ['weekly', 'Weekly planner', 'Gym, water, coffee, manifestation — a two-page week', 'week'],
       ['tabbed', 'Tabbed notebook', 'Dividers like HR, Operations, Finance — pages under each', 'pages']
     ];
     let choice = { type: 'notes', paper: 'lined', cover: { design: 'aurora', hue: HUES[Math.floor(Math.random() * HUES.length)] } };
@@ -228,17 +239,23 @@ class App {
     await S.put('notebooks', nb);
     // one starting page per tab, so every tab opens onto something
     const seed = nb.sections.length ? nb.sections : [null];
+    // a weekly notebook opens onto a full spread, not a lone page
+    const kinds = type === 'weekly' ? ['week1', 'week2'] : [nb.defaultPaper.kind];
     let idx = 0;
     for (const sec of seed) {
-      const p = {
-        id: S.uid(), notebookId: nb.id, index: idx++, w: 1240, h: 1754,
-        paper: { ...nb.defaultPaper },
-        sectionId: sec ? sec.id : undefined,
-        strokes: [], objects: [],
-        meta: ['journal', 'todo', 'planner'].includes(type) ? { date: new Date().toISOString(), dateLabel: fmtDate(new Date()), checks: {} } : {},
-        createdAt: Date.now()
-      };
-      await S.put('pages', p);
+      for (const kind of kinds) {
+        const p = {
+          id: S.uid(), notebookId: nb.id, index: idx++, w: 1240, h: 1754,
+          paper: { ...nb.defaultPaper, kind },
+          sectionId: sec ? sec.id : undefined,
+          strokes: [], objects: [],
+          meta: ['journal', 'todo', 'planner'].includes(type)
+            ? { date: new Date().toISOString(), dateLabel: fmtDate(new Date()), checks: {} }
+            : pageMeta(kind),
+          createdAt: Date.now()
+        };
+        await S.put('pages', p);
+      }
     }
     this.markDirty();
     return nb;
@@ -294,11 +311,21 @@ class App {
       const preset = {
         journal: { title: 'Daily Journal', design: 'dune',    hue: 26,  paper: 'journal' },
         todo:    { title: 'Daily To-Do',   design: 'minimal', hue: 200, paper: 'todo' },
-        planner: { title: 'Daily Planner', design: 'spine',   hue: 152, paper: 'daily' }
+        planner: { title: 'Daily Planner', design: 'spine',   hue: 152, paper: 'daily' },
+        weekly:  { title: 'Weekly Planner', design: 'ridge',  hue: 214, paper: 'week1' }
       }[type];
       nb = await this.createNotebook({ title: preset.title, type, cover: { design: preset.design, hue: preset.hue }, paper: preset.paper });
     }
     await this.openNotebook(nb);
+
+    if (type === 'weekly') {
+      const wk = weekKey();
+      const idx = this.editor.pages.findIndex(p => p.meta?.weekKey === wk && p.meta?.weekPage === 1);
+      if (idx >= 0) this.editor.scrollToPage(idx);
+      else await this.editor.newWeekSpread(mondayOf(new Date()));
+      return;
+    }
+
     const key = todayKey();
     const idx = this.editor.pages.findIndex(p => p.meta?.date && todayKey(new Date(p.meta.date)) === key);
     if (idx >= 0) this.editor.scrollToPage(idx);
