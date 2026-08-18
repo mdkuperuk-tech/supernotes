@@ -122,6 +122,21 @@ strip. Voice notes and photos drop straight onto the page.
 **Daily to-do.** Top 3 personal, top 3 business, everything else, with real tappable checkboxes.
 *Carry unfinished to a new day* copies the rows you didn't tick onto a fresh dated page.
 
+**Weekly planner.** A two-page spread per week, added as a pair. Page 1 is the thinking: top 3
+personal, top 3 business, everything else, three manifestations with two lines each to read daily,
+thought of the week, the Kuper family list, notes. Page 2 is the tracking: a full-width gym block
+(upper/lower/full focus, cardio rows with minutes, strength rows with sets × reps × weight,
+stretch and rest days), then one row per day for water (8), coffee (max 4), drinks (max 3) and
+the habit ticks — read, walk, offline, slept 7h+. Everything taps to fill, and the fill is drawn
+on the page itself so the exported PDF matches the screen exactly.
+
+**Monthly calendar.** A month grid with tinted weekends, room to write in each day, and a side
+column for month priorities, key dates, family and notes.
+
+**SMART goals.** Monthly, quarterly or yearly, with a separate block for Personal, Business and
+Family. Each spells out Specific, Measurable, Achievable, Relevant and Time-bound on its own line,
+plus four milestones, a ten-segment progress meter and space for why the goal matters.
+
 **Daily planner.** A fuller dated page: top-3 personal and business, everything else, an open
 schedule where you write your own times, eight tappable water glasses, a meals block for
 breakfast/lunch/dinner/snacks, *remember today*, and free notes. Ticks and filled glasses carry
@@ -198,9 +213,10 @@ app.js                   shelf, notebook creation, settings, sync orchestration
 editor.js                the page canvas: input, tools, selection, export
 ink.js                   stroke smoothing, pressure/velocity width, shape recognition
 papers.js                paper and template rendering
+weekly.js                weekly spread, month calendar, SMART goals
 covers.js                the sixteen cover designs
 store.js                 IndexedDB persistence + portable backup bundles
-drive.js                 Google Drive sync + Cloud Vision OCR
+drive.js                 Google Drive sync
 pdfout.js                dependency-free PDF writer and share helpers
 ui.js                    icons, modals, popovers, toasts
 icon-*.png               app icons
