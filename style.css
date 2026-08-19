@@ -164,6 +164,14 @@ button.ghost{background:transparent;border-color:transparent}
   background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:4px;box-shadow:var(--sh)}
 .selbar button{padding:8px;border:none;background:transparent;border-radius:9px}
 
+.palette{display:flex;align-items:center;gap:7px;flex-wrap:wrap;padding:8px 12px;
+  background:var(--panel);border-bottom:1px solid var(--line)}
+.palette .phint{font-size:12px;color:var(--muted);margin-right:4px}
+.sw2{width:34px;height:34px;min-width:34px;border-radius:9px;padding:0;border:2px solid transparent;
+  box-shadow:0 0 0 1px rgba(0,0,0,.16) inset;font-size:12px;font-weight:700;color:rgba(0,0,0,.6);
+  display:grid;place-items:center}
+.sw2.on{border-color:var(--accent);transform:scale(1.08)}
+
 /* Sits directly under the top bar, never at the bottom edge — a resting wrist
    must never be able to reach "+ Page" or the zoom controls while writing. */
 .statusbar{display:flex;align-items:center;gap:8px;padding:6px 12px;

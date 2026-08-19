@@ -5,6 +5,7 @@ import * as Drive from './drive.js';
 import { Editor, pageMeta } from './editor.js';
 import { COVER_IDS, coverDataURI, HUES } from './covers.js';
 import { PAPER_KINDS, drawPaper, PAGE } from './papers.js';
+import { BOOK as COLOR_BOOK, SCENES as COLOR_SCENES } from './coloring.js';
 import { icon, el, toast, modal, confirmDialog, promptDialog, popover, fmtDate, fmtShort, todayKey,
          mondayOf, weekKey, fmtWeek } from './ui.js';
 
@@ -119,7 +120,7 @@ class App {
     const c = el(`<div class="card">
       <button class="cover" data-open>
         <img alt="" src="${coverDataURI(nb.cover || {}, { title: nb.title })}">
-        <span class="type">${{ journal: 'Journal', todo: 'To-do', planner: 'Planner', weekly: 'Weekly', tabbed: 'Tabs', notes: 'Notes' }[nb.type] || 'Notes'}</span>
+        <span class="type">${{ journal: 'Journal', todo: 'To-do', planner: 'Planner', weekly: 'Weekly', coloring: 'Colouring', tabbed: 'Tabs', notes: 'Notes' }[nb.type] || 'Notes'}</span>
       </button>
       <div class="meta"><strong></strong><span>${fmtShort(nb.updatedAt || Date.now())}</span></div>
       <button class="icon-btn tiny more" data-more>${icon('more')}</button>
@@ -183,6 +184,7 @@ class App {
       ['todo', 'Daily to-do', 'Top 3 personal, top 3 business, everything else', 'todo'],
       ['planner', 'Daily planner', 'Schedule, water, meals, tasks, notes', 'grid'],
       ['weekly', 'Weekly planner', 'Gym, water, coffee, manifestation — a two-page week', 'week'],
+      ['coloring', 'Coloring book', 'Twelve pictures — tap to fill, colour by number, or plain line art', 'fill'],
       ['tabbed', 'Tabbed notebook', 'Dividers like HR, Operations, Finance — pages under each', 'pages']
     ];
     let choice = { type: 'notes', paper: 'lined', cover: { design: 'aurora', hue: HUES[Math.floor(Math.random() * HUES.length)] } };
@@ -257,7 +259,9 @@ class App {
     // one starting page per tab, so every tab opens onto something
     const seed = nb.sections.length ? nb.sections : [null];
     // a weekly notebook opens onto a full spread, not a lone page
-    const kinds = type === 'weekly' ? ['week1', 'week2'] : [nb.defaultPaper.kind];
+    const kinds = type === 'weekly' ? ['week1', 'week2']
+                : type === 'coloring' ? COLOR_BOOK.map(() => 'coloring')
+                : [nb.defaultPaper.kind];
     let idx = 0;
     for (const sec of seed) {
       for (const kind of kinds) {
@@ -268,7 +272,9 @@ class App {
           strokes: [], objects: [],
           meta: ['journal', 'todo', 'planner'].includes(type)
             ? { date: new Date().toISOString(), dateLabel: fmtDate(new Date()), checks: {} }
-            : pageMeta(kind),
+            : type === 'coloring'
+              ? { ...COLOR_BOOK[idx - 1], fills: {} }
+              : pageMeta(kind),
           createdAt: Date.now()
         };
         await S.put('pages', p);

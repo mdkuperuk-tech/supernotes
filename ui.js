@@ -38,7 +38,9 @@ export const ICON = {
   grid:       '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
   calendar:   '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>',
   target:     '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="1"/>',
-  week:       '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M7 14h3M7 17h3M14 14h3M14 17h3"/>'
+  week:       '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M7 14h3M7 17h3M14 14h3M14 17h3"/>',
+  fill:       '<path d="M6 11 12 5l7 7-6 6a2 2 0 0 1-3 0l-4-4a2 2 0 0 1 0-3Z"/><path d="M9 8 7 6"/><path d="M20 16c0 1.1-.9 2-2 2s-2-.9-2-2 2-4 2-4 2 2.9 2 4Z"/>',
+  palette:    '<circle cx="12" cy="12" r="9"/><circle cx="9" cy="9" r="1.2"/><circle cx="15" cy="9" r="1.2"/><circle cx="8" cy="14" r="1.2"/><circle cx="14" cy="15" r="1.2"/>'
 };
 
 export function icon(name, cls = '') {

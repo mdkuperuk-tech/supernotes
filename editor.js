@@ -3,6 +3,7 @@
 import * as S from './store.js';
 import * as Ink from './ink.js';
 import { drawPaper, PAGE, PAPER_COLORS, todoCheckboxes, dailyTargets, pageTargets, INTERACTIVE, roundRect } from './papers.js';
+import * as Color from './coloring.js';
 import { icon, el, toast, modal, confirmDialog, promptDialog, popover, fmtDate,
          mondayOf, weekKey, fmtWeek, fmtWeekLong, fmtMonth, monthGrid, fmtQuarter } from './ui.js';
 
@@ -117,6 +118,7 @@ export class Editor {
           <button class="chip" data-a="addpage">${icon('plus')} Page</button>
         </div>
 
+        <div class="palette" data-el="palette" hidden></div>
         <div class="tabbar" data-el="tabs" hidden></div>
         <div class="toolrail" data-el="rail"></div>
 
@@ -128,10 +130,11 @@ export class Editor {
 
     this.vp = this.q('vp'); this.doc = this.q('doc'); this.selEl = this.q('sel');
     this.root.querySelector('.title-btn').textContent = this.nb.title;
-    this.q('sub').textContent = { journal: 'Journal', todo: 'Daily to-do', planner: 'Daily planner', weekly: 'Weekly planner', tabbed: 'Tabbed notebook', notes: 'Notebook' }[this.nb.type] || 'Notebook';
+    this.q('sub').textContent = { journal: 'Journal', todo: 'Daily to-do', planner: 'Daily planner', weekly: 'Weekly planner', coloring: 'Colouring book', tabbed: 'Tabbed notebook', notes: 'Notebook' }[this.nb.type] || 'Notebook';
 
     this.buildRail();
     this.renderTabs();
+    this.renderPalette();
     this.root.querySelector('.ed').addEventListener('click', e => {
       const b = e.target.closest('[data-a]');
       if (b) this.action(b.dataset.a, b);
@@ -280,6 +283,7 @@ export class Editor {
       ['highlighter', 'Highlighter'], ['lasso', 'Select — tap an item, or draw around a group'],
       ['shapes', 'Shape'], ['text', 'Text box'], ['image', 'Photo'], ['mic', 'Voice note'], ['hand', 'Pan']
     ];
+    if (this.hasColoring()) tools.unshift(['fill', 'Fill — tap an area to colour it']);
     const rail = this.q('rail');
     rail.innerHTML =
       `<button class="tool pen-slot ${penOn ? 'on' : ''}" data-a="pens" data-tool="${penId}" title="${Ink.TOOLS[penId].label} — tap again to switch pen">
@@ -293,6 +297,72 @@ export class Editor {
       <button class="tool" data-a="sizes" title="Size"><span class="sizedot" style="width:${Math.min(20, 4 + t.size)}px;height:${Math.min(20, 4 + t.size)}px"></span></button>`;
   }
 
+  /** Does this notebook contain any coloring pages? */
+  hasColoring() { return this.allPages.some(p => p.paper?.kind === 'coloring'); }
+
+  /** Colour the region under a tap. */
+  fillAt(hit) {
+    const p = hit.page;
+    if (p.paper.kind !== 'coloring') return;
+    const cv = this.pageEls.get(p.id)?.querySelector('canvas');
+    if (!cv) return;
+    const ctx = cv.getContext('2d');
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    const rg = Color.regionAt(p, hit.x, hit.y, ctx);
+    ctx.restore();
+    if (!rg) return;
+    const fills = p.meta.fills || (p.meta.fills = {});
+    const before = fills[rg.id];
+    const want = this.app.tool.fillColor || '#F6C667';
+    const next = before === want ? undefined : want;
+    if (next === undefined) delete fills[rg.id]; else fills[rg.id] = next;
+    this.renderPage(p);
+    this.queueSave(p);
+    this.pushUndo({
+      undo: () => { if (before === undefined) delete fills[rg.id]; else fills[rg.id] = before; this.renderPage(p); this.queueSave(p); },
+      redo: () => { if (next === undefined) delete fills[rg.id]; else fills[rg.id] = next; this.renderPage(p); this.queueSave(p); }
+    });
+  }
+
+  /** The swatch strip shown while the Fill tool is active on a coloring page. */
+  renderPalette() {
+    const bar = this.q('palette');
+    if (!bar) return;
+    const p = this.pages[this.currentPageIndex()];
+    const on = this.app.tool.name === 'fill' && p?.paper?.kind === 'coloring' && p.meta?.mode !== 'blank';
+    bar.hidden = !on;
+    if (!on) return;
+    const sc = Color.sceneOf(p);
+    const numbered = p.meta?.mode === 'number';
+    const cur = this.app.tool.fillColor || sc.colors[1];
+    bar.innerHTML = `<span class="phint">${numbered ? 'Tap a number, then the matching areas' : 'Pick a colour, then tap an area'}</span>` +
+      sc.colors.map((c, i) =>
+        `<button class="sw2 ${c === cur ? 'on' : ''}" data-a="fillcolor" data-c="${c}" style="background:${c}" title="${c}">${numbered ? (i + 1) : ''}</button>`
+      ).join('') +
+      `<button class="chip" data-a="clearfills" title="Start this picture again">Reset</button>`;
+  }
+
+  action_fillcolor(btn) {
+    this.app.tool.fillColor = btn.dataset.c;
+    this.app.saveTool();
+    this.renderPalette();
+  }
+
+  async action_clearfills() {
+    const p = this.pages[this.currentPageIndex()];
+    if (!p || p.paper.kind !== 'coloring') return;
+    if (!Object.keys(p.meta.fills || {}).length) return;
+    if (!await confirmDialog('Start again', 'Remove every colour from this picture?', 'Start again')) return;
+    const before = p.meta.fills;
+    p.meta.fills = {};
+    this.renderPage(p); this.queueSave(p);
+    this.pushUndo({
+      undo: () => { p.meta.fills = before; this.renderPage(p); this.queueSave(p); },
+      redo: () => { p.meta.fills = {}; this.renderPage(p); this.queueSave(p); }
+    });
+  }
+
   setTool(name) {
     const t = this.app.tool;
     t.name = name;
@@ -303,6 +373,7 @@ export class Editor {
     if (spec && !spec.sizes.includes(t.size)) t.size = spec.sizes[2];
     this.app.saveTool();
     this.buildRail();
+    this.renderPalette();
     this.clearSelection();
     this.vp.dataset.tool = name;
     if (name === 'image') { this.pickImage(); this.setTool(t.prevTool || 'pen'); }
@@ -889,7 +960,10 @@ export class Editor {
   }
   updatePageNo() {
     const n = this.q('pageno');
-    if (n) n.textContent = `${this.currentPageIndex() + 1} / ${this.pages.length}`;
+    const i = this.currentPageIndex();
+    if (n) n.textContent = `${i + 1} / ${this.pages.length}`;
+    // the palette belongs to whichever picture you're looking at
+    if (i !== this._paletteFor) { this._paletteFor = i; this.renderPalette(); }
   }
   scrollToPage(i) {
     const p = this.pages[Math.max(0, Math.min(i, this.pages.length - 1))];
@@ -1000,6 +1074,7 @@ export class Editor {
     if (this.selection && this.hitSelection(hit)) { this.startMoveSelection(e, hit); return; }
     this.clearSelection();
 
+    if (tool.name === 'fill') { this.fillAt(hit); return; }
     if (tool.name === 'text') { this.addTextBox(hit); return; }
     if (tool.name === 'eraser') {
       this._erase = { id: e.pointerId, page: hit.page, before: hit.page.strokes.slice(), beforeObjs: hit.page.objects.slice(), changed: false };

@@ -1,5 +1,6 @@
 /* papers.js — page backgrounds drawn straight to canvas (vector, so they stay crisp at any zoom) */
 import { weekly1, weekly2, weeklyTargets, monthPaper, monthTargets, goalsPaper, goalsTargets } from './weekly.js';
+import { drawColoring } from './coloring.js';
 export { weeklyTargets, monthTargets, goalsTargets } from './weekly.js';
 
 export const PAGE = { w: 1240, h: 1754 };          // A4 at 150 dpi
@@ -30,6 +31,7 @@ export const PAPER_KINDS = [
   { id: 'week2',   label: 'Weekly — trackers' },
   { id: 'month',   label: 'Monthly calendar' },
   { id: 'goals',   label: 'SMART goals' },
+  { id: 'coloring', label: 'Coloring page' },
   { id: 'music',   label: 'Music staff' },
   { id: 'storyboard', label: 'Storyboard' },
   { id: 'journal', label: 'Journal' },
@@ -65,6 +67,7 @@ export function drawPaper(ctx, page) {
     case 'week2':   weekly2(ctx, w, h, c, page); break;
     case 'month':   monthPaper(ctx, w, h, c, page); break;
     case 'goals':   goalsPaper(ctx, w, h, c, page); break;
+    case 'coloring': drawColoring(ctx, page); break;
     default: break;
   }
   ctx.restore();
