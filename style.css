@@ -165,7 +165,10 @@ button.ghost{background:transparent;border-color:transparent}
 .selbar button{padding:8px;border:none;background:transparent;border-radius:9px}
 
 .palette{display:flex;align-items:center;gap:7px;flex-wrap:wrap;padding:8px 12px;
-  background:var(--panel);border-bottom:1px solid var(--line)}
+  background:var(--panel);border-bottom:1px solid var(--line);position:relative;z-index:6}
+/* the floating tool rail overlays the editor, so keep the swatches clear of it */
+.ed[data-rail="left"]  .palette{padding-left:78px}
+.ed[data-rail="right"] .palette{padding-right:78px}
 .palette .phint{font-size:12px;color:var(--muted);margin-right:4px}
 .sw2{width:34px;height:34px;min-width:34px;border-radius:9px;padding:0;border:2px solid transparent;
   box-shadow:0 0 0 1px rgba(0,0,0,.16) inset;font-size:12px;font-weight:700;color:rgba(0,0,0,.6);
