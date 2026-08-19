@@ -62,19 +62,32 @@ export async function init() {
    A token request outside a user gesture is blocked by the browser as a popup, so
    we wait for a gesture we know we have. With the grant already on file Google
    returns the token without showing anything. */
-let renewArmed = false;
+let renewArmed = false, renewFails = 0, nextRenewAt = 0;
+const MAX_SILENT_TRIES = 2;
+
+function onGesture() {
+  if (!needsToken()) return disarmGestureRenew();
+  /* Budget first: once it's spent we must stop and ask, otherwise the backoff
+     check below would swallow the decision and we'd retry forever in silence. */
+  if (renewFails >= MAX_SILENT_TRIES) {
+    /* This device can't renew without showing something — Safari with third-party
+       cookies blocked is the usual cause. Stop trying on every tap (that would
+       flash a window each time) and ask once, plainly. */
+    disarmGestureRenew();
+    set({ status: 'ready', message: 'Tap to reconnect Drive' });
+    return;
+  }
+  if (Date.now() < nextRenewAt) return;                 // backing off after a failure
+  silentRenew();
+}
+function disarmGestureRenew() {
+  renewArmed = false;
+  for (const ev of ['pointerdown', 'keydown']) window.removeEventListener(ev, onGesture, true);
+}
 export function armGestureRenew() {
   if (renewArmed || !state.linked) return;
   renewArmed = true;
-  const go = () => {
-    if (needsToken()) silentRenew();
-    if (!needsToken()) disarm();
-  };
-  const disarm = () => {
-    renewArmed = false;
-    for (const ev of ['pointerdown', 'keydown']) window.removeEventListener(ev, go, true);
-  };
-  for (const ev of ['pointerdown', 'keydown']) window.addEventListener(ev, go, true);
+  for (const ev of ['pointerdown', 'keydown']) window.addEventListener(ev, onGesture, true);
 }
 
 const needsToken = () => !state.token || Date.now() > state.tokenExp - 5 * 60 * 1000;
@@ -83,14 +96,19 @@ let renewing = null;
 function silentRenew() {
   if (renewing) return renewing;
   renewing = signIn(true)
+    .then(() => { renewFails = 0; nextRenewAt = 0; disarmGestureRenew(); })
     .catch(() => {
-      /* Silent renewal can fail for reasons that are not the user's problem —
-         Safari blocking third-party cookies is the common one. Keep the grant,
-         keep working locally, let the next sync attempt ask properly. */
+      /* Not the user's problem and not a sign-out. Keep the grant, keep working
+         locally, wait a minute before trying again. */
+      renewFails++;
+      nextRenewAt = Date.now() + 60_000;
     })
     .finally(() => { renewing = null; });
   return renewing;
 }
+
+/** An explicit tap on Connect / Sync is a clean slate for the retry budget. */
+function resetRenewBudget() { renewFails = 0; nextRenewAt = 0; }
 
 export async function saveConfig({ clientId }) {
   if (clientId !== undefined) {
@@ -127,6 +145,7 @@ let inFlight = null;
  * is raced against a timeout: a hung renewal must degrade to "reconnect", never hang.
  */
 export function signIn(silent = false) {
+  if (!silent) resetRenewBudget();
   if (inFlight) return inFlight;
   inFlight = new Promise(async (res, rej) => {
     if (!state.clientId) return rej(new Error('Add your Google client ID in Settings first.'));
