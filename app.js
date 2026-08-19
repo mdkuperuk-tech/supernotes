@@ -29,7 +29,24 @@ class App {
     }
 
     await Drive.init();
-    Drive.onChange(() => this.paintSyncChip());
+    /* The moment a fresh access key lands, push anything that piled up while we
+       didn't have one. Nothing is ever lost waiting for a token.
+       syncAll() itself emits changes, so this listener can re-enter: record the new
+       state before dispatching, and defer the sync off the current call stack. */
+    let hadToken = !!Drive.state.token;
+    let flushing = false;
+    Drive.onChange(() => {
+      const has = !!Drive.state.token;
+      const gained = has && !hadToken;
+      hadToken = has;
+      if (gained && this._dirty && !flushing) {
+        flushing = true;
+        Promise.resolve()
+          .then(() => this.syncNow(true))
+          .finally(() => { flushing = false; });
+      }
+      this.paintSyncChip();
+    });
 
     const nbs = await S.listNotebooks();
     if (!nbs.length) await this.seed();
@@ -78,7 +95,7 @@ class App {
 
         <div class="shelf-head"><h2>Notebooks</h2><button class="primary" data-a="new">${icon('plus')} New notebook</button></div>
         <div class="grid" data-el="grid"></div>
-        <p class="foot">Everything is saved on this device the moment you write it${Drive.state.signedIn ? ', then synced to Google Drive' : ''}.</p>
+        <p class="foot">Everything is saved on this device the moment you write it${Drive.state.linked ? ', then synced to Google Drive' : ''}.</p>
       </div>`;
 
     const grid = this.root.querySelector('[data-el="grid"]');
@@ -346,7 +363,7 @@ class App {
           <button data-x="save">Save client ID</button>
         </details>
         <div class="row gap">
-          <button class="primary" data-x="${d.signedIn ? 'out' : 'in'}">${d.signedIn ? 'Disconnect' : 'Connect Google Drive'}</button>
+          <button class="primary" data-x="${d.linked ? 'out' : 'in'}">${d.linked ? 'Disconnect' : 'Connect Google Drive'}</button>
           <button data-x="sync">Sync now</button>
         </div>
         <p class="status" data-st>${d.status}: ${d.message}</p>
@@ -453,7 +470,7 @@ class App {
 
   async syncNow(quiet) {
     if (!Drive.state.clientId) { if (!quiet) this.settingsPanel(); return; }
-    if (!Drive.state.signedIn) {
+    if (!Drive.state.linked) {
       if (quiet) return;
       try { await Drive.signIn(); } catch (e) { return toast(e.message, 'error'); }
     }
@@ -461,7 +478,12 @@ class App {
       const r = await Drive.syncAll();
       this._dirty = false;
       if (!quiet && !r.skipped) toast(`Synced with Google Drive`);
-    } catch (e) { if (!quiet) toast(e.message, 'error'); }
+    } catch (e) {
+      /* "needs a tap" isn't a failure — the access key just aged out. Your work is
+         already saved on the device; the next tap renews and this runs again. */
+      if (e?.needsTap) { if (!quiet) toast('Refreshing the Drive connection — tap anywhere'); }
+      else if (!quiet) toast(e.message, 'error');
+    }
     this.paintSyncChip();
   }
 

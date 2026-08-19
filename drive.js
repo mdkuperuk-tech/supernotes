@@ -17,7 +17,7 @@ const DEFAULT_CLIENT_ID = '535908975338-epcfdu9dinndd9velufgt2cvjmp9t4kh.apps.go
 export const state = {
   clientId: '', folderId: '',
   token: '', tokenExp: 0,
-  signedIn: false, email: '',
+  signedIn: false, linked: false, email: '',
   status: 'off',           // off | ready | syncing | synced | error | offline
   message: '', lastSync: 0
 };
@@ -34,20 +34,62 @@ export async function init() {
   state.folderId = (await S.setting('gdrive.folderId')) || '';
   if (!state.clientId) { set({ status: 'off', message: 'Drive not set up' }); return; }
 
-  // Reuse a cached access token so a reload inside the hour resumes without re-consent.
+  /* Two separate ideas, and conflating them is what made this feel like being
+     logged out constantly:
+       - the GRANT: you allowed this app access. It lasts until you revoke it.
+       - the ACCESS TOKEN: a 1-hour key. Expiring is routine, not a sign-out.
+     `linked` is the grant. The UI follows the grant, never the token. */
+  state.linked = !!(await S.setting('gdrive.connected'));
+
   const cached = await S.setting('gdrive.token');
   if (cached && cached.exp > Date.now() + 60000) {
     set({ token: cached.t, tokenExp: cached.exp, signedIn: true, status: 'synced', message: 'Connected' });
+  } else if (state.linked) {
+    // Grant is still good; we just need a fresh key. Say connected, renew on the
+    // first gesture. Google refuses a token request that isn't inside a user
+    // gesture, so asking here on page load would only fail and look broken.
+    set({ signedIn: true, status: 'synced', message: 'Connected' });
   } else {
     set({ status: 'ready', message: 'Not connected' });
   }
 
   try { await loadGIS(); } catch { set({ status: 'offline', message: 'Offline — will sync later' }); return; }
 
-  // If there is no live token, try to renew quietly. This never blocks the UI.
-  if (!state.signedIn && await S.setting('gdrive.connected')) {
-    signIn(true).catch(() => set({ status: 'ready', message: 'Tap to reconnect Drive' }));
-  }
+  if (state.linked) armGestureRenew();
+}
+
+/* Renew the access token on the next real tap, and never more than once at a time.
+   A token request outside a user gesture is blocked by the browser as a popup, so
+   we wait for a gesture we know we have. With the grant already on file Google
+   returns the token without showing anything. */
+let renewArmed = false;
+export function armGestureRenew() {
+  if (renewArmed || !state.linked) return;
+  renewArmed = true;
+  const go = () => {
+    if (needsToken()) silentRenew();
+    if (!needsToken()) disarm();
+  };
+  const disarm = () => {
+    renewArmed = false;
+    for (const ev of ['pointerdown', 'keydown']) window.removeEventListener(ev, go, true);
+  };
+  for (const ev of ['pointerdown', 'keydown']) window.addEventListener(ev, go, true);
+}
+
+const needsToken = () => !state.token || Date.now() > state.tokenExp - 5 * 60 * 1000;
+
+let renewing = null;
+function silentRenew() {
+  if (renewing) return renewing;
+  renewing = signIn(true)
+    .catch(() => {
+      /* Silent renewal can fail for reasons that are not the user's problem —
+         Safari blocking third-party cookies is the common one. Keep the grant,
+         keep working locally, let the next sync attempt ask properly. */
+    })
+    .finally(() => { renewing = null; });
+  return renewing;
 }
 
 export async function saveConfig({ clientId }) {
@@ -104,24 +146,37 @@ export function signIn(silent = false) {
         return finish(rej, new Error(resp.error));
       }
       const exp = Date.now() + ((resp.expires_in || 3600) - 120) * 1000;
+      state.linked = true;
       set({ token: resp.access_token, tokenExp: exp, signedIn: true, status: 'synced', message: 'Connected' });
       await S.setting('gdrive.connected', true);
       await S.setting('gdrive.token', { t: resp.access_token, exp });
       try { await ensureFolder(); } catch {}
       finish(res, true);
     };
+    /* A failed renewal while the grant still stands is not a sign-out. Stay
+       "Connected", keep saving locally, and try again on the next gesture. */
+    const softFail = msg => {
+      if (state.linked) { set({ status: 'synced', message: 'Connected' }); armGestureRenew(); }
+      else set({ status: 'ready', message: msg });
+    };
     tokenClient.error_callback = err => {
-      set({ status: 'ready', message: silent ? 'Tap to reconnect Drive' : (err?.type || 'Sign-in cancelled') });
+      softFail(err?.type || 'Sign-in cancelled');
       finish(rej, new Error(err?.type || 'Sign-in did not complete'));
     };
 
     setTimeout(() => {
       if (settled) return;
-      set({ status: 'ready', message: 'Tap to reconnect Drive' });
+      softFail('Tap to connect Drive');
       finish(rej, new Error('Google sign-in timed out — tap Connect Drive to retry.'));
     }, silent ? 8000 : 120000);
 
-    try { tokenClient.requestAccessToken({ prompt: silent ? '' : 'consent' }); }
+    /* prompt:'' means "only show me something if you actually have to". Google skips
+       the account chooser and the consent screen when the grant is already on file.
+       prompt:'consent' would force the whole approval flow every single time — which
+       is exactly what made this look like it had signed you out. Only ask for consent
+       explicitly the very first time, when there is no grant yet. */
+    const prompt = state.linked ? '' : 'consent';
+    try { tokenClient.requestAccessToken({ prompt, hint: state.email || undefined }); }
     catch (e) { finish(rej, e); }
   }).finally(() => { inFlight = null; });
   return inFlight;
@@ -129,16 +184,24 @@ export function signIn(silent = false) {
 
 export async function signOut() {
   if (state.token && window.google?.accounts?.oauth2) google.accounts.oauth2.revoke(state.token, () => {});
+  state.linked = false;
   await S.setting('gdrive.connected', false);
   await S.setting('gdrive.token', null);
   set({ token: '', tokenExp: 0, signedIn: false, status: 'ready', message: 'Disconnected' });
 }
 
+/** Disconnecting is the only real sign-out. Everything else is just a stale key. */
 async function token() {
   if (state.token && Date.now() < state.tokenExp) return state.token;
-  await signIn(true);
-  if (!state.token) throw new Error('Google session expired — tap Connect Drive.');
+  await silentRenew();
+  if (!state.token) { armGestureRenew(); throw new NeedsTap(); }
   return state.token;
+}
+
+/* A "we need a tap before we can sync" signal, distinct from a real failure, so
+   the sync loop can skip quietly instead of shouting at you. */
+export class NeedsTap extends Error {
+  constructor() { super('Waiting for a tap to refresh the Drive connection'); this.needsTap = true; }
 }
 
 /* ---------- REST helpers ---------- */
@@ -147,9 +210,11 @@ async function api(url, opts = {}) {
   const t = await token();
   const r = await fetch(url, { ...opts, headers: { Authorization: 'Bearer ' + t, ...(opts.headers || {}) } });
   if (r.status === 401) {
+    // The key went stale early. Drop it, keep the grant, get a new one on the next tap.
     state.token = ''; state.tokenExp = 0;
     await S.setting('gdrive.token', null);
-    set({ signedIn: false, status: 'ready', message: 'Tap to reconnect Drive' });
+    if (state.linked) { set({ status: 'synced', message: 'Connected' }); armGestureRenew(); throw new NeedsTap(); }
+    set({ signedIn: false, status: 'ready', message: 'Tap to connect Drive' });
     throw new Error('Google session expired — tap Connect Drive.');
   }
   if (!r.ok) throw new Error(`Drive ${r.status}: ${(await r.text()).slice(0, 200)}`);
@@ -237,7 +302,7 @@ export async function pullNotebook(fileId) {
 
 /** Two-way sync: newest wins per notebook. */
 export async function syncAll() {
-  if (!state.signedIn) return { skipped: true };
+  if (!state.linked) return { skipped: true };
   if (!navigator.onLine) { set({ status: 'offline', message: 'Offline — will sync later' }); return { skipped: true }; }
   set({ status: 'syncing', message: 'Syncing…' });
   try {
