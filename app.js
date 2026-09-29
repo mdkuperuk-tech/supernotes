@@ -5,7 +5,8 @@ import * as Drive from './drive.js';
 import { Editor, pageMeta } from './editor.js';
 import { COVER_IDS, coverDataURI, HUES } from './covers.js';
 import { PAPER_KINDS, drawPaper, PAGE } from './papers.js';
-import { BOOK as COLOR_BOOK, SCENES as COLOR_SCENES } from './coloring.js';
+import * as Sudoku from './sudoku.js';
+import * as WordFind from './wordfind.js';
 import { icon, el, toast, modal, confirmDialog, promptDialog, popover, fmtDate, fmtShort, todayKey,
          mondayOf, weekKey, fmtWeek } from './ui.js';
 
@@ -120,7 +121,7 @@ class App {
     const c = el(`<div class="card">
       <button class="cover" data-open>
         <img alt="" src="${coverDataURI(nb.cover || {}, { title: nb.title })}">
-        <span class="type">${{ journal: 'Journal', todo: 'To-do', planner: 'Planner', weekly: 'Weekly', coloring: 'Colouring', tabbed: 'Tabs', notes: 'Notes' }[nb.type] || 'Notes'}</span>
+        <span class="type">${{ journal: 'Journal', todo: 'To-do', planner: 'Planner', weekly: 'Weekly', sudoku: 'Sudoku', wordfind: 'Word find', tabbed: 'Tabs', notes: 'Notes' }[nb.type] || 'Notes'}</span>
       </button>
       <div class="meta"><strong></strong><span>${fmtShort(nb.updatedAt || Date.now())}</span></div>
       <button class="icon-btn tiny more" data-more>${icon('more')}</button>
@@ -184,7 +185,8 @@ class App {
       ['todo', 'Daily to-do', 'Top 3 personal, top 3 business, everything else', 'todo'],
       ['planner', 'Daily planner', 'Schedule, water, meals, tasks, notes', 'grid'],
       ['weekly', 'Weekly planner', 'Gym, water, coffee, manifestation — a two-page week', 'week'],
-      ['coloring', 'Coloring book', 'Twelve pictures — tap to fill, colour by number, or plain line art', 'fill'],
+      ['sudoku', 'Sudoku', 'Eight puzzles, easy and medium — write the answers with your pen', 'grid'],
+      ['wordfind', 'Word find', 'US and Colombia cities, Philippines cities, countries, capitals — circle what you find', 'search'],
       ['tabbed', 'Tabbed notebook', 'Dividers like HR, Operations, Finance — pages under each', 'pages']
     ];
     let choice = { type: 'notes', paper: 'lined', cover: { design: 'aurora', hue: HUES[Math.floor(Math.random() * HUES.length)] } };
@@ -196,7 +198,7 @@ class App {
       <label class="lbl" data-tabslbl style="display:none">Tabs <span class="opt">— separated by commas, rename any time</span></label>
       <input class="field" data-tabs placeholder="HR, Operations, Finance" value="" autocomplete="off" style="display:none">
       <label class="lbl" data-paperlbl>Paper</label>
-      <div class="paper-grid" data-papergrid>${PAPER_KINDS.filter(k => !['journal','todo','daily'].includes(k.id)).map(k =>
+      <div class="paper-grid" data-papergrid>${PAPER_KINDS.filter(k => !['journal','todo','daily','sudoku','wordfind'].includes(k.id)).map(k =>
         `<button type="button" class="paper-opt ${k.id === 'lined' ? 'on' : ''}" data-paper="${k.id}"><canvas width="112" height="158"></canvas><span>${k.label}</span></button>`).join('')}</div>
     </div>`);
     let paperKind = 'lined';
@@ -217,7 +219,8 @@ class App {
         { label: 'Cancel' },
         { label: 'Choose cover →', primary: true, onClick: () => {
             const title = body.querySelector('[data-t]').value.trim()
-              || ({ notes: 'Notebook', journal: 'Journal', todo: 'Daily To-Do', planner: 'Daily Planner', tabbed: 'Tabbed Notebook' })[choice.type]
+              || ({ notes: 'Notebook', journal: 'Journal', todo: 'Daily To-Do', planner: 'Daily Planner', tabbed: 'Tabbed Notebook',
+                     weekly: 'Weekly Planner', sudoku: 'Sudoku', wordfind: 'Word Find' })[choice.type]
               || 'Notebook';
             const paper = choice.type === 'journal' ? 'journal' : choice.type === 'todo' ? 'todo' : choice.type === 'planner' ? 'daily' : paperKind;
             const tabNames = choice.type === 'tabbed'
@@ -260,7 +263,8 @@ class App {
     const seed = nb.sections.length ? nb.sections : [null];
     // a weekly notebook opens onto a full spread, not a lone page
     const kinds = type === 'weekly' ? ['week1', 'week2']
-                : type === 'coloring' ? COLOR_BOOK.map(() => 'coloring')
+                : type === 'sudoku' ? SUDOKU_PLAN.map(() => 'sudoku')
+                : type === 'wordfind' ? WORDFIND_PLAN.map(() => 'wordfind')
                 : [nb.defaultPaper.kind];
     let idx = 0;
     for (const sec of seed) {
@@ -272,9 +276,11 @@ class App {
           strokes: [], objects: [],
           meta: ['journal', 'todo', 'planner'].includes(type)
             ? { date: new Date().toISOString(), dateLabel: fmtDate(new Date()), checks: {} }
-            : type === 'coloring'
-              ? { ...COLOR_BOOK[idx - 1], fills: {} }
-              : pageMeta(kind),
+            : type === 'sudoku'
+              ? { ...Sudoku.generatePuzzle(SUDOKU_PLAN[(idx - 1) % SUDOKU_PLAN.length]), puzzleIndex: idx, puzzleTotal: SUDOKU_PLAN.length }
+              : type === 'wordfind'
+                ? (([theme, diff]) => ({ ...WordFind.generatePuzzle(theme, diff), puzzleIndex: idx, puzzleTotal: WORDFIND_PLAN.length }))(WORDFIND_PLAN[(idx - 1) % WORDFIND_PLAN.length])
+                : pageMeta(kind),
           createdAt: Date.now()
         };
         await S.put('pages', p);
@@ -507,6 +513,17 @@ class App {
 
 const mb = n => n > 1e9 ? (n / 1e9).toFixed(2) + ' GB' : (n / 1e6).toFixed(1) + ' MB';
 const TAB_HUES = [214, 152, 26, 292, 338, 184, 44, 258, 6, 92];
+
+// A built-in sudoku notebook: four easy puzzles, then four medium.
+const SUDOKU_PLAN = ['easy', 'easy', 'easy', 'easy', 'medium', 'medium', 'medium', 'medium'];
+// A built-in word find notebook: two puzzles (easy, medium) across five themes.
+const WORDFIND_PLAN = [
+  ['us_cities', 'easy'], ['us_cities', 'medium'],
+  ['colombia_cities', 'easy'], ['colombia_cities', 'medium'],
+  ['philippines_cities', 'easy'], ['philippines_cities', 'medium'],
+  ['world_countries', 'easy'], ['world_countries', 'medium'],
+  ['world_capitals', 'easy'], ['world_capitals', 'medium']
+];
 
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); window.__bip = e; });
 

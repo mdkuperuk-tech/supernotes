@@ -1,6 +1,7 @@
 /* papers.js — page backgrounds drawn straight to canvas (vector, so they stay crisp at any zoom) */
 import { weekly1, weekly2, weeklyTargets, monthPaper, monthTargets, goalsPaper, goalsTargets } from './weekly.js';
-import { drawColoring } from './coloring.js';
+import { drawSudoku } from './sudoku.js';
+import { drawWordFind } from './wordfind.js';
 export { weeklyTargets, monthTargets, goalsTargets } from './weekly.js';
 
 export const PAGE = { w: 1240, h: 1754 };          // A4 at 150 dpi
@@ -31,7 +32,8 @@ export const PAPER_KINDS = [
   { id: 'week2',   label: 'Weekly — trackers' },
   { id: 'month',   label: 'Monthly calendar' },
   { id: 'goals',   label: 'SMART goals' },
-  { id: 'coloring', label: 'Coloring page' },
+  { id: 'sudoku',  label: 'Sudoku' },
+  { id: 'wordfind', label: 'Word find' },
   { id: 'music',   label: 'Music staff' },
   { id: 'storyboard', label: 'Storyboard' },
   { id: 'journal', label: 'Journal' },
@@ -67,10 +69,25 @@ export function drawPaper(ctx, page) {
     case 'week2':   weekly2(ctx, w, h, c, page); break;
     case 'month':   monthPaper(ctx, w, h, c, page); break;
     case 'goals':   goalsPaper(ctx, w, h, c, page); break;
-    case 'coloring': drawColoring(ctx, page); break;
+    case 'sudoku':  drawSudoku(ctx, page); break;
+    case 'wordfind': drawWordFind(ctx, page); break;
+    // The coloring-book feature was retired, but a page created before that must
+    // never just go blank — anything the person had colored in is still sitting
+    // safely in page.meta.fills, so say so rather than looking like data loss.
+    case 'coloring': retiredPage(ctx, w, h); break;
     default: break;
   }
   ctx.restore();
+}
+
+function retiredPage(ctx, w, h) {
+  ctx.fillStyle = '#8a8f9c';
+  ctx.font = '600 22px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('This page type (Coloring book) has been retired.', w / 2, h / 2 - 14);
+  ctx.font = '400 16px system-ui, sans-serif';
+  ctx.fillText('Anything you colored in here is still saved — ask to have it restored.', w / 2, h / 2 + 16);
+  ctx.textAlign = 'left';
 }
 
 /* ---- primitives ---- */

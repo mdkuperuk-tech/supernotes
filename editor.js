@@ -3,7 +3,6 @@
 import * as S from './store.js';
 import * as Ink from './ink.js';
 import { drawPaper, PAGE, PAPER_COLORS, todoCheckboxes, dailyTargets, pageTargets, INTERACTIVE, roundRect } from './papers.js';
-import * as Color from './coloring.js';
 import { icon, el, toast, modal, confirmDialog, promptDialog, popover, fmtDate,
          mondayOf, weekKey, fmtWeek, fmtWeekLong, fmtMonth, monthGrid, fmtQuarter } from './ui.js';
 
@@ -38,6 +37,15 @@ export const PALETTE = [
   '#c94f8e', '#7b5230', '#ffffff'
 ];
 const HL_PALETTE = ['#ffe14d', '#7bf0a2', '#7ad7ff', '#ff9ecb', '#c8a5ff', '#ffb066'];
+
+/* Palm rejection tuning. iPadOS Safari doesn't reliably report touch contact size
+   (PointerEvent.width/height), unlike Android, so a resting hand can't be told from
+   a real finger by geometry alone there — the defenses below are ownership- and
+   timing-based instead, which work the same on every platform. */
+const PEN_GRACE_MS   = 1500;  // a pause between strokes the pencil still "owns" the page for
+const PALM_ZONE_MS   = 6000;  // how long a spot stays "known palm" after a rejected contact
+const PALM_ZONE_R    = 240;   // px radius of that remembered spot
+const PAIR_WINDOW_MS = 350;   // two fingers arriving further apart than this aren't one pinch
 
 export class Editor {
   constructor(root, app) {
@@ -118,7 +126,6 @@ export class Editor {
           <button class="chip" data-a="addpage">${icon('plus')} Page</button>
         </div>
 
-        <div class="palette" data-el="palette" hidden></div>
         <div class="tabbar" data-el="tabs" hidden></div>
         <div class="toolrail" data-el="rail"></div>
 
@@ -130,11 +137,10 @@ export class Editor {
 
     this.vp = this.q('vp'); this.doc = this.q('doc'); this.selEl = this.q('sel');
     this.root.querySelector('.title-btn').textContent = this.nb.title;
-    this.q('sub').textContent = { journal: 'Journal', todo: 'Daily to-do', planner: 'Daily planner', weekly: 'Weekly planner', coloring: 'Colouring book', tabbed: 'Tabbed notebook', notes: 'Notebook' }[this.nb.type] || 'Notebook';
+    this.q('sub').textContent = { journal: 'Journal', todo: 'Daily to-do', planner: 'Daily planner', weekly: 'Weekly planner', sudoku: 'Sudoku', wordfind: 'Word find', tabbed: 'Tabbed notebook', notes: 'Notebook' }[this.nb.type] || 'Notebook';
 
     this.buildRail();
     this.renderTabs();
-    this.renderPalette();
     this.root.querySelector('.ed').addEventListener('click', e => {
       const b = e.target.closest('[data-a]');
       if (b) this.action(b.dataset.a, b);
@@ -283,7 +289,6 @@ export class Editor {
       ['highlighter', 'Highlighter'], ['lasso', 'Select — tap an item, or draw around a group'],
       ['shapes', 'Shape'], ['text', 'Text box'], ['image', 'Photo'], ['mic', 'Voice note'], ['hand', 'Pan']
     ];
-    if (this.hasColoring()) tools.unshift(['fill', 'Fill — tap an area to colour it']);
     const rail = this.q('rail');
     rail.innerHTML =
       `<button class="tool pen-slot ${penOn ? 'on' : ''}" data-a="pens" data-tool="${penId}" title="${Ink.TOOLS[penId].label} — tap again to switch pen">
@@ -297,72 +302,6 @@ export class Editor {
       <button class="tool" data-a="sizes" title="Size"><span class="sizedot" style="width:${Math.min(20, 4 + t.size)}px;height:${Math.min(20, 4 + t.size)}px"></span></button>`;
   }
 
-  /** Does this notebook contain any coloring pages? */
-  hasColoring() { return this.allPages.some(p => p.paper?.kind === 'coloring'); }
-
-  /** Colour the region under a tap. */
-  fillAt(hit) {
-    const p = hit.page;
-    if (p.paper.kind !== 'coloring') return;
-    const cv = this.pageEls.get(p.id)?.querySelector('canvas');
-    if (!cv) return;
-    const ctx = cv.getContext('2d');
-    ctx.save();
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    const rg = Color.regionAt(p, hit.x, hit.y, ctx);
-    ctx.restore();
-    if (!rg) return;
-    const fills = p.meta.fills || (p.meta.fills = {});
-    const before = fills[rg.id];
-    const want = this.app.tool.fillColor || '#F6C667';
-    const next = before === want ? undefined : want;
-    if (next === undefined) delete fills[rg.id]; else fills[rg.id] = next;
-    this.renderPage(p);
-    this.queueSave(p);
-    this.pushUndo({
-      undo: () => { if (before === undefined) delete fills[rg.id]; else fills[rg.id] = before; this.renderPage(p); this.queueSave(p); },
-      redo: () => { if (next === undefined) delete fills[rg.id]; else fills[rg.id] = next; this.renderPage(p); this.queueSave(p); }
-    });
-  }
-
-  /** The swatch strip shown while the Fill tool is active on a coloring page. */
-  renderPalette() {
-    const bar = this.q('palette');
-    if (!bar) return;
-    const p = this.pages[this.currentPageIndex()];
-    const on = this.app.tool.name === 'fill' && p?.paper?.kind === 'coloring' && p.meta?.mode !== 'blank';
-    bar.hidden = !on;
-    if (!on) return;
-    const sc = Color.sceneOf(p);
-    const numbered = p.meta?.mode === 'number';
-    const cur = this.app.tool.fillColor || sc.colors[1];
-    bar.innerHTML = `<span class="phint">${numbered ? 'Tap a number, then the matching areas' : 'Pick a colour, then tap an area'}</span>` +
-      sc.colors.map((c, i) =>
-        `<button class="sw2 ${c === cur ? 'on' : ''}" data-a="fillcolor" data-c="${c}" style="background:${c}" title="${c}">${numbered ? (i + 1) : ''}</button>`
-      ).join('') +
-      `<button class="chip" data-a="clearfills" title="Start this picture again">Reset</button>`;
-  }
-
-  action_fillcolor(btn) {
-    this.app.tool.fillColor = btn.dataset.c;
-    this.app.saveTool();
-    this.renderPalette();
-  }
-
-  async action_clearfills() {
-    const p = this.pages[this.currentPageIndex()];
-    if (!p || p.paper.kind !== 'coloring') return;
-    if (!Object.keys(p.meta.fills || {}).length) return;
-    if (!await confirmDialog('Start again', 'Remove every colour from this picture?', 'Start again')) return;
-    const before = p.meta.fills;
-    p.meta.fills = {};
-    this.renderPage(p); this.queueSave(p);
-    this.pushUndo({
-      undo: () => { p.meta.fills = before; this.renderPage(p); this.queueSave(p); },
-      redo: () => { p.meta.fills = {}; this.renderPage(p); this.queueSave(p); }
-    });
-  }
-
   setTool(name) {
     const t = this.app.tool;
     t.name = name;
@@ -373,7 +312,6 @@ export class Editor {
     if (spec && !spec.sizes.includes(t.size)) t.size = spec.sizes[2];
     this.app.saveTool();
     this.buildRail();
-    this.renderPalette();
     this.clearSelection();
     this.vp.dataset.tool = name;
     if (name === 'image') { this.pickImage(); this.setTool(t.prevTool || 'pen'); }
@@ -962,8 +900,6 @@ export class Editor {
     const n = this.q('pageno');
     const i = this.currentPageIndex();
     if (n) n.textContent = `${i + 1} / ${this.pages.length}`;
-    // the palette belongs to whichever picture you're looking at
-    if (i !== this._paletteFor) { this._paletteFor = i; this.renderPalette(); }
   }
   scrollToPage(i) {
     const p = this.pages[Math.max(0, Math.min(i, this.pages.length - 1))];
@@ -1041,26 +977,58 @@ export class Editor {
   }
 
   /**
-   * True when a touch contact should be ignored outright.
-   * Two cases: a resting palm while the pencil is in use, and a contact whose
-   * reported area is far too big to be a fingertip (a palm or forearm).
+   * True when a touch contact should be ignored outright. Contact size (the old
+   * check) is a bonus signal at best — Safari on iPad doesn't populate it, so this
+   * leans on things that hold on every platform: whether the pencil currently owns
+   * the page, and whether this spot was just identified as someone's resting hand.
    */
   isPalm(e) {
     if (e.pointerType !== 'touch') return false;
     if (this._penDown) return true;
-    if (performance.now() - (this._lastPenAt || -1e9) < 900) return true;
+    if (performance.now() - (this._lastPenAt || -1e9) < PEN_GRACE_MS) return true;
     if ((e.width || 0) > 45 || (e.height || 0) > 45) return true;
+    if (this._palmZone && performance.now() - this._palmZone.t < PALM_ZONE_MS &&
+        Math.hypot(e.clientX - this._palmZone.x, e.clientY - this._palmZone.y) < PALM_ZONE_R) return true;
     return false;
+  }
+
+  /** Remember where a rejected contact was, so a hand that lifts and resettles a
+   *  few millimetres away (very common mid-word) keeps being recognised as itself. */
+  _notePalm(p) {
+    this._palmZone = { x: p.clientX ?? p.x, y: p.clientY ?? p.y, t: performance.now() };
   }
 
   onDown(e) {
     if (e.target.closest('.tbox, .apin, .tick, .glass, .hit, .selframe')) return;
-    if (e.pointerType === 'pen') { this._penDown = true; this._lastPenAt = performance.now(); }
-    if (this.isPalm(e)) return;
-    this._pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
+    if (e.pointerType === 'pen') {
+      this._penDown = true; this._lastPenAt = performance.now();
+      // Any touch already on the glass the instant the Pencil lands is the writer's
+      // own hand, not a deliberate second contact — this is what stopped a stroke
+      // dead or spun it into a pinch whenever a resting hand had already been
+      // (mis)read as a real finger before the tip touched down.
+      for (const [id, pt] of [...this._pointers]) {
+        if (pt.type === 'touch') { this._pointers.delete(id); this._notePalm(pt); }
+      }
+      if (this._pan) this._pan = null;
+      if (this._pinch) { this._pinch = null; this._twoTap = null; }
+    }
+    if (this.isPalm(e)) { this._notePalm(e); return; }
+    this._pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType, downAt: performance.now() });
 
-    if (this._pointers.size === 2) { this.cancelDraw(); this.startPinch(); return; }
-    if (this._pointers.size > 2) return;
+    // Only two TOUCHES arriving together are a pinch. A pencil sharing the map with
+    // a touch must never count toward that, and a touch that shows up well after an
+    // already-settled one is a hand shifting, not a second finger joining a gesture.
+    const touches = [...this._pointers.values()].filter(p => p.type === 'touch');
+    if (e.pointerType === 'touch' && touches.length === 2) {
+      const [a, b] = touches;
+      if (Math.abs(a.downAt - b.downAt) > PAIR_WINDOW_MS) {
+        this._pointers.delete(e.pointerId);
+        this._notePalm(e);
+        return;
+      }
+      this.cancelDraw(); this.startPinch(); return;
+    }
+    if (touches.length > 2) { this._pointers.delete(e.pointerId); this._notePalm(e); return; }
 
     if (e.pointerType === 'pen') this.app.notePen();
 
@@ -1074,7 +1042,6 @@ export class Editor {
     if (this.selection && this.hitSelection(hit)) { this.startMoveSelection(e, hit); return; }
     this.clearSelection();
 
-    if (tool.name === 'fill') { this.fillAt(hit); return; }
     if (tool.name === 'text') { this.addTextBox(hit); return; }
     if (tool.name === 'eraser') {
       this._erase = { id: e.pointerId, page: hit.page, before: hit.page.strokes.slice(), beforeObjs: hit.page.objects.slice(), changed: false };
@@ -1094,7 +1061,7 @@ export class Editor {
     if (this._pointers.has(e.pointerId)) {
       const p = this._pointers.get(e.pointerId); p.x = e.clientX; p.y = e.clientY;
     }
-    if (this._pinch && this._pointers.size >= 2) { this.movePinch(); return; }
+    if (this._pinch && this._touchPair().every(Boolean)) { this.movePinch(); return; }
     if (this._pan) {
       this.tx = this._pan.tx + (e.clientX - this._pan.x);
       this.ty = this._pan.ty + (e.clientY - this._pan.y);
@@ -1131,7 +1098,7 @@ export class Editor {
   onUp(e) {
     if (e.pointerType === 'pen') { this._penDown = false; this._lastPenAt = performance.now(); }
     this._pointers.delete(e.pointerId);
-    if (this._pointers.size < 2 && this._pinch) {
+    if (this._touchPair().some(p => !p) && this._pinch) {
       const tt = this._twoTap;
       this._pinch = null; this._twoTap = null;
       // A quick two-finger tap that neither zoomed nor panned = swap pen ⇄ eraser.
@@ -1180,35 +1147,58 @@ export class Editor {
     this._lasso = null; this._erase = null;
   }
 
+  _touchPair() {
+    // Always the two touches, even if a pen contact happens to share the map —
+    // a pinch is a two-finger thing and must never read a pen tip as one of them.
+    const t = [...this._pointers.values()].filter(p => p.type === 'touch');
+    return [t[0], t[1]];
+  }
   startPinch() {
-    const [a, b] = [...this._pointers.values()];
+    const [a, b] = this._touchPair();
     const r = this.vp.getBoundingClientRect();
     // Two contacts sitting far apart, or arriving while the pencil is live, are a
     // hand resting on the glass — not a deliberate two-finger tap.
     const spread = Math.hypot(a.x - b.x, a.y - b.y);
     this._twoTap = {
       t0: performance.now(), cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2, zoom0: this.zoom, moved: 0,
-      palm: spread > 260 || this._penDown || performance.now() - (this._lastPenAt || -1e9) < 900
+      palm: spread > 260 || this._penDown || performance.now() - (this._lastPenAt || -1e9) < PEN_GRACE_MS
     };
     this._pinch = {
       d: Math.hypot(a.x - b.x, a.y - b.y),
       cx: (a.x + b.x) / 2 - r.left, cy: (a.y + b.y) / 2 - r.top,
-      zoom: this.zoom, tx: this.tx, ty: this.ty
+      zoom: this.zoom, tx: this.tx, ty: this.ty, armed: false
     };
     this._pan = null;
   }
   movePinch() {
-    const [a, b] = [...this._pointers.values()];
+    const [a, b] = this._touchPair();
+    if (!a || !b) return;
     const r = this.vp.getBoundingClientRect();
     const d = Math.hypot(a.x - b.x, a.y - b.y);
     const cx = (a.x + b.x) / 2 - r.left, cy = (a.y + b.y) / 2 - r.top;
+    if (this._twoTap) this._twoTap.moved = Math.max(this._twoTap.moved, Math.hypot(cx + r.left - this._twoTap.cx, cy + r.top - this._twoTap.cy));
+
+    if (!this._pinch.armed) {
+      // Two contacts that both belong to one settling hand drift by a percent or
+      // two, not a deliberate spread — the very first hand-down of a session (no
+      // pen history yet to have flagged it as a palm) shouldn't be able to zoom
+      // the page just because it happened to register as two touches. Require a
+      // real, decisive pinch before this starts moving anything, and keep the
+      // baseline fresh in the meantime so arming never causes a visible jump.
+      if (Math.abs(d - this._pinch.d) / (this._pinch.d || 1) < 0.06) {
+        this._pinch.d = d; this._pinch.cx = cx; this._pinch.cy = cy;
+        this._pinch.zoom = this.zoom; this._pinch.tx = this.tx; this._pinch.ty = this.ty;
+        return;
+      }
+      this._pinch.armed = true;
+    }
+
     const k = d / (this._pinch.d || 1);
     const nz = Math.max(0.18, Math.min(6, this._pinch.zoom * k));
     const kk = nz / this._pinch.zoom;
     this.zoom = nz;
     this.tx = cx - (this._pinch.cx - this._pinch.tx) * kk;
     this.ty = cy - (this._pinch.cy - this._pinch.ty) * kk;
-    if (this._twoTap) this._twoTap.moved = Math.max(this._twoTap.moved, Math.hypot(cx + r.left - this._twoTap.cx, cy + r.top - this._twoTap.cy));
     this.applyTransform();
     clearTimeout(this._zt);
     this._zt = setTimeout(() => {
