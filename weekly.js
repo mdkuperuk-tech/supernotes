@@ -369,18 +369,18 @@ function crescent(ctx, x, y, s) {
 }
 
 /* ---------------- page 1 renderer ---------------- */
-function panelRows(ctx, x, y, w, h, title, c, rows, rowH = 54) {
+function panelRows(ctx, x, y, w, h, title, c, rows, prefix, checks, rowH = 54) {
   shell(ctx, x, y, w, h, title, c);
   for (let i = 0; i < rows; i++) {
     const yy = y + 74 + i * rowH;
     if (yy > y + h - 10) break;
-    box(ctx, x + 20, yy - 12, 24, c, false);
+    box(ctx, x + 20, yy - 12, 24, c, !!checks[prefix + i]);
     ln(ctx, x + 56, yy + 12, x + w - 20, yy + 12, fade(c.line, 0.8), 1.1);
   }
 }
 
 export function weekly1(ctx, w, h, c, page) {
-  const L = WK1;
+  const L = WK1, checks = page?.meta?.checks || {};
   ctx.fillStyle = fade(c.accent, 0.10);
   rr(ctx, L.head.x, L.head.y, L.head.w, L.head.h, 16); ctx.fill();
   ctx.fillStyle = c.text; ctx.textAlign = 'left';
@@ -389,10 +389,10 @@ export function weekly1(ctx, w, h, c, page) {
   ctx.font = '700 32px ui-serif, Georgia, serif';
   ctx.fillText(page?.meta?.weekLabel || page?.meta?.dateLabel || '', L.head.x + 26, L.head.y + 78);
 
-  panelRows(ctx, L.personal.x, L.personal.y, L.personal.w, L.personal.h, 'TOP 3 — PERSONAL', c, 3);
-  panelRows(ctx, L.business.x, L.business.y, L.business.w, L.business.h, 'TOP 3 — BUSINESS', c, 3);
+  panelRows(ctx, L.personal.x, L.personal.y, L.personal.w, L.personal.h, 'TOP 3 — PERSONAL', c, 3, 'p', checks);
+  panelRows(ctx, L.business.x, L.business.y, L.business.w, L.business.h, 'TOP 3 — BUSINESS', c, 3, 'b', checks);
   panelRows(ctx, L.else.x, L.else.y, L.else.w, L.else.h, 'EVERYTHING ELSE', c,
-    Math.floor((L.else.h - 74) / 54));
+    Math.floor((L.else.h - 74) / 54), 'e', checks);
 
   /* manifestation — three, two lines each, plenty of room to read them daily */
   const M = L.manifest;
@@ -424,7 +424,7 @@ export function weekly1(ctx, w, h, c, page) {
   for (let i = 0; ; i++) {
     const yy = L.family.y + 100 + i * 48;
     if (yy > L.family.y + L.family.h - 16) break;
-    box(ctx, L.family.x + 20, yy - 14, 22, c, false);
+    box(ctx, L.family.x + 20, yy - 14, 22, c, !!checks['k' + i]);
     ln(ctx, L.family.x + 54, yy + 8, L.family.x + L.family.w - 20, yy + 8, fade(c.line, 0.8), 1.1);
   }
 
@@ -598,7 +598,9 @@ function gridGeometry() {
 
 /** Tap targets for a weekly page. Page 1 has checkboxes; page 2 has the trackers. */
 export function weeklyTargets(page) {
-  const which = page?.meta?.weekPage || 1;
+  // The paper decides which layout is drawn, so it decides the targets too.
+  const kind = page?.paper?.kind;
+  const which = kind === 'week2' ? 2 : kind === 'week1' ? 1 : (page?.meta?.weekPage || 1);
   const boxes = [], pips = [];
   if (which === 1) {
     const L = WK1;
@@ -652,7 +654,7 @@ export const MONTHCAL = (() => {
 })();
 
 export function monthPaper(ctx, w, h, c, page) {
-  const L = MONTHCAL;
+  const L = MONTHCAL, checks = page?.meta?.checks || {};
   ctx.fillStyle = fade(c.accent, 0.10);
   rr(ctx, L.head.x, L.head.y, L.head.w, L.head.h, 16); ctx.fill();
   ctx.fillStyle = c.text; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
@@ -703,20 +705,20 @@ export function monthPaper(ctx, w, h, c, page) {
 
   const S = L.side;
   const blocks = [
-    ['MONTH PRIORITIES', 5],
-    ['KEY DATES', 6],
-    ['KUPER FAMILY', 5],
-    ['NOTES', 0]
+    ['MONTH PRIORITIES', 5, 'm'],
+    ['KEY DATES', 6, 'd'],
+    ['KUPER FAMILY', 5, 'f'],
+    ['NOTES', 0, '']
   ];
   let sy = S.y;
   const each = S.h / blocks.length - 14;
-  for (const [title, n] of blocks) {
+  for (const [title, n, pre] of blocks) {
     shell(ctx, S.x, sy, S.w, each, title, c);
     if (n) {
       for (let i = 0; i < n; i++) {
         const yy = sy + 74 + i * 46;
         if (yy > sy + each - 12) break;
-        box(ctx, S.x + 16, yy - 12, 20, c, false);
+        box(ctx, S.x + 16, yy - 12, 20, c, !!checks[pre + i]);
         ln(ctx, S.x + 46, yy + 8, S.x + S.w - 16, yy + 8, fade(c.line, 0.8), 1.1);
       }
     } else {
@@ -858,7 +860,7 @@ function progressGeo(x, y, w, h) {
 export function goalsTargets(page) {
   const L = GOALS, boxes = [];
   for (let i = 0; i < 3; i++) {
-    boxes.push({ key: 'per_' + i, x: L.head.x + L.head.w - 20 - (3 - i) * 158, y: L.head.y + 30, s: 44, w: 142 });
+    boxes.push({ key: 'per_' + i, x: L.head.x + L.head.w - 20 - (3 - i) * 158, y: L.head.y + 30, s: 44, w: 142, group: 'per' });
   }
   GOAL_AREAS.forEach((area, ai) => {
     const y = L.top + ai * (L.blockH + L.gap);
@@ -868,7 +870,8 @@ export function goalsTargets(page) {
     for (let i = 0; i < 4; i++) boxes.push({ key: `gm_${area.key}_${i}`, x: rx2, y: mTop + i * 42, s: 22 });
     const pg = progressGeo(x, y, w, h);
     for (let i = 0; i < 10; i++) {
-      boxes.push({ key: `gp_${area.key}_${i}`, x: pg.x + i * (pg.s + 4), y: pg.y, s: pg.h, w: pg.s, plain: true });
+      boxes.push({ key: `gp_${area.key}_${i}`, x: pg.x + i * (pg.s + 4), y: pg.y, s: pg.h, w: pg.s, plain: true,
+                   scale: `gp_${area.key}`, idx: i });
     }
   });
   return { boxes, pips: [] };

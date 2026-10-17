@@ -8,7 +8,7 @@ import { icon, el, toast, modal, confirmDialog, promptDialog, popover, fmtDate,
 
 /** Stamps a new page with whatever labels its paper kind needs. */
 export function pageMeta(kind, now = new Date(), when = now) {
-  const base = { checks: {} };
+  const base = { checks: {}, checksV: 2 };
   if (kind === 'week1' || kind === 'week2') {
     return { ...base, date: mondayOf(when).toISOString(), weekKey: weekKey(when),
              weekPage: kind === 'week1' ? 1 : 2,
@@ -78,6 +78,7 @@ export class Editor {
     this._pointers = new Map();
     this._rejected = new Set();   // pointer ids judged to be a resting hand — ignored for their whole life
     this._btnTaps = new Map();    // pointer id -> pending tap on an on-page button (see bindInput)
+    this._soft = new Map();       // rejected touches whose verdict a quick scroll may overturn
     this._draw = null;
     this._raf = 0;
   }
@@ -540,10 +541,14 @@ export class Editor {
       if (k) {
         const kind = k.dataset.k;
         targets.forEach(p => {
+          const changed = p.paper.kind !== kind;
           p.paper.kind = kind;
-          // switching onto a dated template fills in its labels, keeping any ticks
+          // switching onto a dated template fills in its labels. Ticks belong to the
+          // layout they were made on (the same key means a different box on another
+          // template), so a real change of template starts them fresh.
           const add = pageMeta(kind, new Date(), p.meta?.date ? new Date(p.meta.date) : new Date());
-          if (Object.keys(add).length) p.meta = { ...p.meta, ...add, checks: p.meta?.checks || add.checks || {} };
+          if (Object.keys(add).length) p.meta = { ...p.meta, ...add, checks: changed ? (add.checks || {}) : (p.meta?.checks || add.checks || {}) };
+          else if (changed && p.meta) p.meta.checks = {};
         });
         this.pages.forEach(p => this.syncOverlay(p));
       }
@@ -740,9 +745,24 @@ export class Editor {
     this.pages.forEach(p => this.renderPage(p));
   }
 
+  /** Weekly page 1 and the month sidebar used to save taps without ever drawing
+   *  them, so pages from before that fix can hold ticks nobody saw. Clear those
+   *  once, so old pages don't light up with marks the user never chose. */
+  _migrateChecks(p) {
+    const k = p.paper?.kind;
+    if ((k !== 'week1' && k !== 'month') || !p.meta || p.meta.checksV >= 2) return;
+    const stale = k === 'week1' ? /^[pbek]\d+$/ : /^[mdf]\d+$/;
+    const ch = p.meta.checks || {};
+    let n = 0;
+    for (const key of Object.keys(ch)) if (stale.test(key)) { delete ch[key]; n++; }
+    p.meta.checksV = 2;
+    if (n) this.queueSave(p);
+  }
+
   renderPage(p) {
     const d = this.pageEls.get(p.id);
     if (!d) return;
+    this._migrateChecks(p);
     const R = this.renderScale;
     const ink = d.querySelector('.ink'), live = d.querySelector('.live');
     for (const c of [ink, live]) {
@@ -799,16 +819,34 @@ export class Editor {
     ov.innerHTML = '';
 
     if (INTERACTIVE.includes(p.paper.kind)) {
+      p.meta = p.meta || {};
       const checks = p.meta.checks || (p.meta.checks = {});
       const targets = pageTargets(p);
       /* Older to-do and daily pages paint their tick/fill in the DOM. The weekly,
          month and goals pages paint theirs onto the page canvas instead, so screen
          and exported PDF can never drift apart — those get invisible hit areas. */
       const onCanvas = !['todo', 'daily'].includes(p.paper.kind);
+      const all = [...(targets.glasses || []), ...(targets.pips || []), ...(targets.boxes || [])];
       const flip = (key, after) => {
         // (A tap from the writer's resting hand never gets here — bindInput's
         // capture-phase click guard swallows it.)
-        checks[key] = !checks[key];
+        const t = all.find(x => x.key === key) || {};
+        if (t.group) {
+          // Pick-one (period selector, mood): this one on, the rest of its group off;
+          // tapping the one that's already on clears it.
+          const was = !!checks[key];
+          for (const x of all) if (x.group === t.group) delete checks[x.key];
+          if (!was) checks[key] = true;
+        } else if (t.scale) {
+          // A meter (progress): tapping segment n fills everything up to n; tapping
+          // the top filled segment steps it back by one.
+          const seg = all.filter(x => x.scale === t.scale).sort((a, b) => a.idx - b.idx);
+          const top = seg.reduce((m, x) => (checks[x.key] ? Math.max(m, x.idx) : m), -1);
+          const upto = top === t.idx ? t.idx - 1 : t.idx;
+          for (const x of seg) { if (x.idx <= upto) checks[x.key] = true; else delete checks[x.key]; }
+        } else {
+          checks[key] = !checks[key];
+        }
         after(!!checks[key]);
         if (onCanvas) this.renderPage(p);
         this.queueSave(p);
@@ -1157,7 +1195,9 @@ export class Editor {
     if (this._penDown) return true;
     if (performance.now() - (this._lastPenAt || -1e9) < PEN_GRACE_MS) return true;
     if (performance.now() - (this._lastHoverAt || -1e9) < HOVER_GRACE_MS) return true;
-    if ((e.width || 0) > 45 || (e.height || 0) > 45) return true;
+    // WebKit reports 2 × the touch radius, in steps of ~10px; a flat fingertip can
+    // reach 60. Only something clearly hand-sized counts here.
+    if ((e.width || 0) > 80 || (e.height || 0) > 80) return true;
     if (useZone && this._palmZone && performance.now() - this._palmZone.t < PALM_ZONE_MS &&
         Math.hypot(e.clientX - this._palmZone.x, e.clientY - this._palmZone.y) < PALM_ZONE_R) return true;
     return false;
@@ -1228,6 +1268,16 @@ export class Editor {
     this._notePalm(e);
   }
 
+  /** The Pencil is writing right now (touching, or lifted under PEN_GRACE ago). A
+   *  touch rejected for this reason is a palm, full stop. Any other reason (the
+   *  Pencil merely hovering, a big contact, "a palm was here a moment ago") is a
+   *  softer guess that a deliberate scroll is allowed to overturn — see onMove. */
+  _palmHard() {
+    const now = performance.now();
+    return this._penDown || now - (this._lastPenAt || -1e9) < PEN_GRACE_MS ||
+      now - (this._lastHoverAt || -1e9) < HOVER_GRACE_MS;      // Pencil poised above the glass
+  }
+
   onDown(e) {
     // Overlay controls handle their own taps (bindInput activates them), with three
     // exceptions that behave like the page underneath:
@@ -1249,7 +1299,13 @@ export class Editor {
     // A pointerdown is always a brand-new contact; if the system ever reuses an id
     // whose lift we never saw, it must not inherit the old palm verdict.
     this._rejected.delete(e.pointerId);
-    if (this.isPalm(e)) { this._reject(e); return; }
+    if (this.isPalm(e)) {
+      this._reject(e);
+      if (e.pointerType === 'touch' && !this._palmHard() && !this._pan && !this._pinch &&
+          (e.width || 0) <= 80 && (e.height || 0) <= 80)
+        this._soft.set(e.pointerId, { x: e.clientX, y: e.clientY, t: performance.now() });
+      return;
+    }
     // Writing on the page ends typing in a text box. Cancelling touchstart (above)
     // also cancels Safari's own tap-to-blur, so do it here.
     if (e.pointerType !== 'touch') this._blurEditing();
@@ -1262,6 +1318,7 @@ export class Editor {
    *  on-page handler can stop the event. */
   _penLanded() {
     this._penDown = true; this._lastPenAt = performance.now();
+    this._soft.clear();
     // A finger that is mid-tap on a checkbox when the Pencil lands is the hand.
     for (const [id, bt] of [...this._btnTaps]) if (bt.type === 'touch') this._btnTaps.delete(id);
     this._boxTap = null;
@@ -1344,7 +1401,23 @@ export class Editor {
     // hovering above the glass (newer iPads) counts for a short window only, so a
     // finger can scroll again soon after the Pencil moves away.
     if (e.pointerType === 'pen') { if (e.buttons || this._penDown) this._lastPenAt = performance.now(); else this._lastHoverAt = performance.now(); }
-    if (this._rejected.has(e.pointerId)) return;
+    if (this._rejected.has(e.pointerId)) {
+      // A finger only guessed to be a palm (see _palmHard) that sets off on a quick,
+      // decisive slide is somebody scrolling: hand it the page. A resting hand
+      // settles and creeps; it doesn't travel 24px in its first 400ms.
+      const s = this._soft.get(e.pointerId);
+      if (!s) return;
+      if (this._palmHard() || this._pan || this._pinch || this._draw || this._moveSel || performance.now() - s.t > 400 ||
+          this.inputMode(e) !== 'pan') {
+        this._soft.delete(e.pointerId); return;
+      }
+      if (Math.hypot(e.clientX - s.x, e.clientY - s.y) < 24) return;
+      this._soft.delete(e.pointerId); this._rejected.delete(e.pointerId);
+      this._pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: 'touch', downAt: s.t });
+      this._gestureOrigin = { zoom: this.zoom, tx: this.tx, ty: this.ty };
+      this._pan = { id: e.pointerId, x: e.clientX, y: e.clientY, tx: this.tx, ty: this.ty, live: true };
+      return;
+    }
     if (this.isPalm(e) && !this._pointers.has(e.pointerId)) return;
     if (this._pointers.has(e.pointerId)) {
       const p = this._pointers.get(e.pointerId); p.x = e.clientX; p.y = e.clientY;
@@ -1395,6 +1468,7 @@ export class Editor {
   onUp(e) {
     if (e.pointerType === 'pen') { this._penDown = false; this._lastPenAt = this._lastPenUpAt = performance.now(); }
     // A resting hand lifting off ends nothing — not a stroke, a pan, or a selection drag.
+    this._soft.delete(e.pointerId);
     if (this._rejected.delete(e.pointerId)) return;
     this._pointers.delete(e.pointerId);
     if (this._touchPair().some(p => !p) && this._pinch) {
@@ -1517,12 +1591,28 @@ export class Editor {
       // the page just because it happened to register as two touches. Require a
       // real, decisive pinch before this starts moving anything, and keep the
       // baseline fresh in the meantime so arming never causes a visible jump.
-      if (Math.abs(d - this._pinch.d) / (this._pinch.d || 1) < 0.06) {
+      // Two fingers sliding together (no spread) is a deliberate two-finger scroll.
+      // Not for a hand: two contacts arriving near the Pencil, or too close/far apart
+      // to be two fingertips, keep needing a real spread before anything moves.
+      const tt = this._twoTap;
+      const slid = !!tt && !tt.palm && tt.moved >= 14 && d >= 30 && d <= 220 && !this._palmHard();
+      if (Math.abs(d - this._pinch.d) / (this._pinch.d || 1) < 0.06 && !slid) {
         this._pinch.d = d; this._pinch.cx = cx; this._pinch.cy = cy;
         this._pinch.zoom = this.zoom; this._pinch.tx = this.tx; this._pinch.ty = this.ty;
         return;
       }
       this._pinch.armed = true;
+      this._pinch.panOnly = Math.abs(d - this._pinch.d) / (this._pinch.d || 1) < 0.06;
+    }
+    // A two-finger scroll holds the zoom steady until the fingers really spread.
+    if (this._pinch.panOnly) {
+      if (Math.abs(d - this._pinch.d) / (this._pinch.d || 1) < 0.06) {
+        this.tx = cx - (this._pinch.cx - this._pinch.tx);
+        this.ty = cy - (this._pinch.cy - this._pinch.ty);
+        this.applyTransform();
+        return;
+      }
+      this._pinch.panOnly = false;
     }
 
     const k = d / (this._pinch.d || 1);

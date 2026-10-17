@@ -6,7 +6,7 @@
    the cached copy and only refreshed the cache in the background. Network-first
    means an update lands the moment you reload, while the cache still keeps
    everything working with no connection. */
-const V = 'supernotes-v12';
+const V = 'supernotes-v13';
 const SHELL = [
   './', './index.html', './manifest.webmanifest',
   './style.css',

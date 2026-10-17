@@ -201,11 +201,22 @@ function journalPaper(ctx, w, h, c, page) {
   const fy = h - 84;
   ctx.fillStyle = fade(c.text, 0.85); ctx.font = '700 15px ui-sans-serif, system-ui, sans-serif'; ctx.textBaseline = 'middle';
   ctx.fillText('MOOD', m, fy);
-  const moods = ['○', '○', '○', '○', '○'];
-  moods.forEach((_, i) => {
-    ctx.strokeStyle = c.line; ctx.lineWidth = 1.4;
-    ctx.beginPath(); ctx.arc(m + 96 + i * 46, fy, 14, 0, 6.284); ctx.stroke();
-  });
+  const checks = page?.meta?.checks || {};
+  for (const t of journalMoods(page)) {
+    const cx = t.x + t.s / 2, cy = t.y + t.s / 2;
+    if (checks[t.key]) {
+      ctx.fillStyle = fade(c.accent, 0.55);
+      ctx.beginPath(); ctx.arc(cx, cy, 14, 0, 6.284); ctx.fill();
+    }
+    ctx.strokeStyle = checks[t.key] ? c.accent : c.line; ctx.lineWidth = checks[t.key] ? 2 : 1.4;
+    ctx.beginPath(); ctx.arc(cx, cy, 14, 0, 6.284); ctx.stroke();
+  }
+}
+
+/* the five mood circles at the foot of a journal page — pick one */
+export function journalMoods(page) {
+  const m = 74, fy = (page?.h || PAGE.h) - 84;
+  return [0, 1, 2, 3, 4].map(i => ({ key: 'mood_' + i, x: m + 96 + i * 46 - 14, y: fy - 14, s: 28, group: 'mood' }));
 }
 
 /* ---- daily to-do template ---- */
@@ -403,7 +414,7 @@ function fade(hex, a) {
 
 /** Every kind of tappable target on a page, in page coordinates.
  *  One source of truth for the editor overlay, the canvas renderer and the PDF. */
-export const INTERACTIVE = ['todo', 'daily', 'week1', 'week2', 'month', 'goals'];
+export const INTERACTIVE = ['todo', 'daily', 'week1', 'week2', 'month', 'goals', 'journal'];
 export function pageTargets(page) {
   switch (page?.paper?.kind) {
     case 'daily': return { ...dailyTargets(), pips: [] };
@@ -412,6 +423,7 @@ export function pageTargets(page) {
     case 'week2': return { glasses: [], ...weeklyTargets(page) };
     case 'month': return { glasses: [], ...monthTargets(page) };
     case 'goals': return { glasses: [], ...goalsTargets(page) };
+    case 'journal': return { boxes: journalMoods(page), glasses: [], pips: [] };
     default:      return { boxes: [], glasses: [], pips: [] };
   }
 }
