@@ -46,6 +46,23 @@ const PEN_GRACE_MS   = 1500;  // a pause between strokes the pencil still "owns"
 const PALM_ZONE_MS   = 6000;  // how long a spot stays "known palm" after a rejected contact
 const PALM_ZONE_R    = 240;   // px radius of that remembered spot
 const PAIR_WINDOW_MS = 350;   // two fingers arriving further apart than this aren't one pinch
+const PAN_SLOP_PX    = 10;    // a single finger must travel this far before the page moves
+const HOVER_GRACE_MS = 300;   // a hovering Pencil (no contact) shields the page for this long
+
+/* Elements that keep the platform's own touch behaviour (click, focus, caret)
+   even inside the drawing surface. Everything else there is ink-only. */
+const NATIVE_OK = 'input, textarea, select, a, button, [contenteditable="true"], .tbox';
+const EDITABLE  = 'input, textarea, [contenteditable="true"], .tbox';
+function nativeOK(t, editableOnly) {
+  const n = t && (t.nodeType === 1 ? t : t.parentElement);
+  return !!(n && n.closest && n.closest(editableOnly ? EDITABLE : NATIVE_OK));
+}
+const elOf = t => t && (t.nodeType === 1 ? t : t.parentElement);
+/* A Touch (TouchEvent) described the way isPalm() reads a PointerEvent. WebKit
+   reports PointerEvent.width/height as 2 × the touch radius, so match that. */
+const touchAsPointer = x => ({ pointerType: x.touchType === 'stylus' ? 'pen' : 'touch',
+  clientX: x.clientX, clientY: x.clientY, width: (x.radiusX || 0) * 2, height: (x.radiusY || 0) * 2 });
+const INK_TOOLS_EXCLUDE = ['eraser', 'lasso', 'text', 'hand'];
 
 export class Editor {
   constructor(root, app) {
@@ -59,6 +76,8 @@ export class Editor {
     this.recorder = null;
     this.renderScale = 1;
     this._pointers = new Map();
+    this._rejected = new Set();   // pointer ids judged to be a resting hand — ignored for their whole life
+    this._btnTaps = new Map();    // pointer id -> pending tap on an on-page button (see bindInput)
     this._draw = null;
     this._raf = 0;
   }
@@ -273,9 +292,9 @@ export class Editor {
   }
 
   /** window-level listener that is torn down when the editor closes */
-  onWin(type, handler) {
+  onWin(type, handler, opts) {
     this._win = this._win || [];
-    window.addEventListener(type, handler);
+    window.addEventListener(type, handler, opts);
     this._win.push([type, handler]);
   }
 
@@ -787,29 +806,31 @@ export class Editor {
          and exported PDF can never drift apart — those get invisible hit areas. */
       const onCanvas = !['todo', 'daily'].includes(p.paper.kind);
       const flip = (key, after) => {
+        // (A tap from the writer's resting hand never gets here — bindInput's
+        // capture-phase click guard swallows it.)
         checks[key] = !checks[key];
         after(!!checks[key]);
         if (onCanvas) this.renderPage(p);
         this.queueSave(p);
       };
       for (const g of (targets.glasses || [])) {
-        const n = el(`<button class="glass ${checks[g.key] ? 'on' : ''}" style="left:${g.x}px;top:${g.y}px;width:${g.s}px;height:${g.s}px"></button>`);
+        const n = el(`<button class="glass ${checks[g.key] ? 'on' : ''}" data-k="${escapeHTML(g.key)}" style="left:${g.x}px;top:${g.y}px;width:${g.s}px;height:${g.s}px"></button>`);
         n.onclick = ev => { ev.stopPropagation(); flip(g.key, on => n.classList.toggle('on', on)); };
         ov.appendChild(n);
       }
       for (const pip of (targets.pips || [])) {
-        const n = el(`<button class="hit" style="left:${pip.x - 3}px;top:${pip.y - 3}px;width:${pip.s + 6}px;height:${pip.s + 6}px"></button>`);
+        const n = el(`<button class="hit" data-k="${escapeHTML(pip.key)}" style="left:${pip.x - 3}px;top:${pip.y - 3}px;width:${pip.s + 6}px;height:${pip.s + 6}px"></button>`);
         n.onclick = ev => { ev.stopPropagation(); flip(pip.key, () => {}); };
         ov.appendChild(n);
       }
       for (const b of (targets.boxes || [])) {
         const w = b.w || b.s;
         if (onCanvas) {
-          const n = el(`<button class="hit" style="left:${b.x - 3}px;top:${b.y - 3}px;width:${w + 6}px;height:${b.s + 6}px"></button>`);
+          const n = el(`<button class="hit" data-k="${escapeHTML(b.key)}" style="left:${b.x - 3}px;top:${b.y - 3}px;width:${w + 6}px;height:${b.s + 6}px"></button>`);
           n.onclick = ev => { ev.stopPropagation(); flip(b.key, () => {}); };
           ov.appendChild(n);
         } else {
-          const n = el(`<button class="tick ${checks[b.key] ? 'on' : ''}" style="left:${b.x}px;top:${b.y}px;width:${w}px;height:${b.s}px">${checks[b.key] ? icon('check') : ''}</button>`);
+          const n = el(`<button class="tick ${checks[b.key] ? 'on' : ''}" data-k="${escapeHTML(b.key)}" style="left:${b.x}px;top:${b.y}px;width:${w}px;height:${b.s}px">${checks[b.key] ? icon('check') : ''}</button>`);
           n.onclick = ev => { ev.stopPropagation(); flip(b.key, on => { n.classList.toggle('on', on); n.innerHTML = on ? icon('check') : ''; }); };
           ov.appendChild(n);
         }
@@ -823,12 +844,14 @@ export class Editor {
         n.textContent = o.text || '';
         n.dataset.oid = o.id;
         n.addEventListener('input', () => { o.text = n.innerText; this.queueSave(p); });
-        n.addEventListener('pointerdown', e => e.stopPropagation());
+        // The Pencil writing across a text box that isn't being edited is ink like
+        // anywhere else on the page (it falls through to the page's onDown).
+        n.addEventListener('pointerdown', e => { if (!this._penInksOnBox(e, n)) e.stopPropagation(); });
         n.addEventListener('blur', () => { if (!n.innerText.trim()) { p.objects = p.objects.filter(x => x.id !== o.id); this.queueSave(p); this.syncOverlay(p); } });
         ov.appendChild(n);
       }
       if (o.type === 'audio') {
-        const n = el(`<button class="apin" style="left:${o.x}px;top:${o.y}px">${icon('play')}<span>${o.label || 'Voice note'}</span><em>${fmtDur(o.dur)}</em></button>`);
+        const n = el(`<button class="apin" data-k="a:${o.id}" style="left:${o.x}px;top:${o.y}px">${icon('play')}<span>${o.label || 'Voice note'}</span><em>${fmtDur(o.dur)}</em></button>`);
         n.addEventListener('pointerdown', e => e.stopPropagation());
         n.onclick = e => { e.stopPropagation(); this.playAudio(o, n); };
         n.oncontextmenu = e => { e.preventDefault(); this.audioMenu(o, p, n); };
@@ -917,12 +940,157 @@ export class Editor {
     vp.addEventListener('pointerdown', e => this.onDown(e));
     vp.addEventListener('pointermove', e => this.onMove(e), { passive: false });
     vp.addEventListener('pointerup', e => this.onUp(e));
-    vp.addEventListener('pointercancel', e => this.onUp(e));
-    vp.addEventListener('pointerleave', e => this.onUp(e));
+    vp.addEventListener('pointercancel', e => {
+      // The system took this contact back. A Pencil stroke keeps what it drew; a
+      // finger stroke (finger drawing on) that iOS cancelled is usually a palm — drop it.
+      if (e.pointerType === 'touch' && this._draw?.id === e.pointerId) { this.clearLive(this._draw.page); this._draw = null; }
+      if (e.pointerType === 'touch' && this._erase?.id === e.pointerId) this._revertErase();
+      this.onUp(e);
+    });
+    // Touch and pen contacts are implicitly captured and get a pointerleave right
+    // after their pointerup; only a mouse can genuinely leave mid-drag.
+    vp.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse') this.onUp(e); });
+
+    /* iPad Safari runs its own gesture recognisers on top of Pointer Events, and
+       `touch-action: none` only switches off pan/zoom — not long-press text
+       selection, the Copy / Look Up callout, the loupe, or Scribble. A resting palm
+       triggers those, and once a native selection is up the Pencil's next taps go
+       to dismissing it instead of to the page: the "missing letters". Cancelling
+       the touch at the source stops all of it, while pointer events (which is all
+       the drawing code listens to) keep flowing for both the Pencil and fingers.
+       Real controls inside the page keep their native behaviour so they still
+       click and focus. */
+    const blockNative = e => {
+      if (!nativeOK(e.target)) { e.preventDefault(); return; }
+      if (e.type !== 'touchstart' || !nativeOK(e.target, true)) return;
+      // Editable text inside the page. The Pencil keeps native behaviour (caret,
+      // Scribble). A finger keeps it only on the box already being edited, and only
+      // if it isn't a palm. Anything else is cancelled; a clean finger tap on an
+      // unfocused box is turned into focus + caret on touchend (below).
+      const tt = [...(e.changedTouches || [])].map(touchAsPointer);
+      if (!tt.length) return;
+      const box = elOf(e.target).closest(EDITABLE);
+      const focused = box && (box === document.activeElement || box.contains(document.activeElement));
+      if (tt.some(x => x.pointerType === 'pen')) {
+        // Pencil: native (caret, Scribble) only on the box being edited or with the
+        // Text tool; otherwise it inks, so the system mustn't grab the touch.
+        if (!focused && this.app.tool.name !== 'text' && box?.matches('.tbox')) e.preventDefault();
+        return;
+      }
+      const palm = tt.some(x => this.isPalm(x));
+      if (focused && !palm) return;
+      e.preventDefault();
+      if (!focused && !palm && tt.length === 1 && e.touches.length === 1 && box?.matches('.tbox'))
+        this._boxTap = { box, id: e.changedTouches[0].identifier, x: tt[0].clientX, y: tt[0].clientY, t: performance.now() };
+    };
+    vp.addEventListener('touchstart', blockNative, { passive: false });
+    // Moves are cancelled everywhere except inside editable text (drag-to-select
+    // there), buttons included — Scribble otherwise grabs a stroke that happens
+    // to start on a checkbox.
+    vp.addEventListener('touchmove', e => {
+      const box = elOf(e.target)?.closest?.(EDITABLE);
+      const focused = box && (box === document.activeElement || box.contains(document.activeElement));
+      if (!focused) e.preventDefault();
+    }, { passive: false });
+    vp.addEventListener('contextmenu', blockNative);
+    const ed = this.root.querySelector('.ed');
+    ed.addEventListener('selectstart', e => { if (!nativeOK(e.target, true)) e.preventDefault(); });
+
+    /* Buttons ON the page (checkboxes, hit areas, audio pins) are re-created every
+       time the page re-renders — which happens each time a stroke is saved — so a
+       browser-synthesised click can land on a fresh copy that knows nothing about
+       where the press began. The editor therefore owns those taps outright: the
+       press is judged (palm or not) at pointerdown, the button is activated by the
+       editor itself on a clean pointerup, and every pointer-originated native click
+       on them is swallowed. Keyboard activation (click.detail === 0) still works. */
+    const PAGE_BTN = '.hit, .tick, .glass, .apin, .selbar button';
+    const pageBtn = t => { const b = elOf(t)?.closest?.(PAGE_BTN); return b && this.vp.contains(b) ? b : null; };
+    /* Buttons OFF the page (tool rail, top bar, tabs, selection bar) live long
+       enough to carry their own verdict. There a press only counts as a palm while
+       the Pencil is touching or has just lifted (300 ms), so a quick finger tap on
+       Undo or the eraser right after writing still works. */
+    const BTN = 'button, [data-a], .tab';
+    ed.addEventListener('pointerdown', e => {
+      // The Pencil touching anything on the page — including the selection frame,
+      // a voice-note pin or a text box, whose own handlers stop the event — makes
+      // every touch already down a palm, from this instant.
+      if (e.pointerType === 'pen' && this.vp.contains(elOf(e.target))) this._penLanded();
+      const pb = pageBtn(e.target);
+      if (pb) {
+        if (this._inkableOn(e, pb)) return;             // onDown inks from it instead
+        // The "recently seen palm here" memory is left out for on-page buttons: a
+        // tap must already be a quick, still press-and-lift (checked on pointerup),
+        // which a hand settling back down isn't — and it would otherwise swallow a
+        // deliberate tap on a box for seconds after a palm brushed it.
+        if (!this.isPalm(e, false)) this._btnTaps.set(e.pointerId, { el: pb, pid: pb.closest('.page')?.dataset.pid, k: pb.dataset.k,
+                                                               type: e.pointerType, x: e.clientX, y: e.clientY, t: performance.now() });
+        return;
+      }
+      const b = elOf(e.target)?.closest?.(BTN); if (!b) return;
+      const palm = e.pointerType === 'touch' && (this._penDown || performance.now() - (this._lastPenAt || -1e9) < 300);
+      b._noClickAt = palm ? performance.now() : 0;
+    }, true);
+    ed.addEventListener('pointerup', e => {
+      const bt = this._btnTaps.get(e.pointerId); if (!bt) return;
+      this._btnTaps.delete(e.pointerId);
+      if (Math.hypot(e.clientX - bt.x, e.clientY - bt.y) > 12 || performance.now() - bt.t > 900) return;
+      this._liveBtn(bt.el, bt.pid, bt.k)?.click();        // detail 0: passes the guard below
+    }, true);
+    ed.addEventListener('pointercancel', e => this._btnTaps.delete(e.pointerId), true);
+    // Never leave the page thinking the Pencil is still down (which would treat
+    // every finger as a palm) if its lift was delivered somewhere onUp can't see.
+    for (const t of ['pointerup', 'pointercancel'])
+      this.onWin(t, e => { if (e.pointerType === 'pen') this._penDown = false; });   // e.g. a lift over a modal
+    // And if that lift lands outside the page entirely (capture lost), finish the
+    // stroke properly rather than leaving it half-drawn.
+    for (const t of ['pointerup', 'pointercancel'])
+      ed.addEventListener(t, e => {
+        if (e.pointerType !== 'pen') return;
+        this._penDown = false; this._lastPenAt = this._lastPenUpAt = performance.now();
+        if (!this.vp.contains(elOf(e.target)) && this._pointers.has(e.pointerId)) this.onUp(e);
+      }, true);
+    ed.addEventListener('click', e => {
+      if (pageBtn(e.target)) { if (e.detail > 0) { e.stopPropagation(); e.preventDefault(); } return; }
+      const b = elOf(e.target)?.closest?.(BTN); if (!b || !b._noClickAt) return;
+      const fresh = performance.now() - b._noClickAt < 10000;
+      b._noClickAt = 0;
+      if (fresh) { e.stopPropagation(); e.preventDefault(); }
+    }, true);
+
+    /* Text boxes: an unfocused box is ink-only to a finger too (a palm resting on
+       it before the Pencil lands would otherwise start native selection there), and
+       a quick, still finger tap focuses it and drops the caret where it touched.
+       Done on touchend, which iOS accepts as the gesture that may raise the keyboard. */
+    vp.addEventListener('touchend', e => {
+      const bt = this._boxTap;
+      const x = bt && [...e.changedTouches].find(t => t.identifier === bt.id);
+      if (!x) return;                                     // some other contact lifted (e.g. the palm)
+      this._boxTap = null;
+      if (performance.now() - bt.t > 450 ||
+          Math.hypot(x.clientX - bt.x, x.clientY - bt.y) > 10 || !bt.box.isConnected) return;
+      e.preventDefault();
+      this._focusBoxAt(bt.box, x.clientX, x.clientY);
+    }, { passive: false });
+
+    // Safari ignores user-scalable=no; a hand resting on the toolbar plus a finger
+    // elsewhere would otherwise zoom the whole app instead of the page. On a Mac
+    // trackpad (no touch screen) Safari reports pinch the same way, so turn it into
+    // page zoom there unless the browser is already sending ctrl+wheel for it.
+    let g0 = 1;
+    this.onWin('gesturestart', e => { e.preventDefault(); g0 = this.zoom; }, { passive: false });
+    this.onWin('gesturechange', e => {
+      e.preventDefault();
+      if (navigator.maxTouchPoints > 0 || !e.scale) return;
+      if (performance.now() - (this._ctrlWheelAt || -1e9) < 400) return;
+      const r = vp.getBoundingClientRect();
+      this.setZoom(g0 * e.scale, (e.clientX ?? r.left + r.width / 2) - r.left, (e.clientY ?? r.top + r.height / 2) - r.top);
+    }, { passive: false });
+    this.onWin('gestureend', e => e.preventDefault(), { passive: false });
 
     vp.addEventListener('wheel', e => {
       e.preventDefault();
       if (e.ctrlKey || e.metaKey) {
+        if (e.ctrlKey) this._ctrlWheelAt = performance.now();
         const r = vp.getBoundingClientRect();
         this.setZoom(this.zoom * Math.exp(-e.deltaY / 260), e.clientX - r.left, e.clientY - r.top);
       } else {
@@ -977,17 +1145,20 @@ export class Editor {
   }
 
   /**
-   * True when a touch contact should be ignored outright. Contact size (the old
-   * check) is a bonus signal at best — Safari on iPad doesn't populate it, so this
+   * True when a touch contact should be ignored outright. Contact size is a bonus
+   * signal at best — WebKit reports it (2 × touch radius) but coarsely, so this
    * leans on things that hold on every platform: whether the pencil currently owns
-   * the page, and whether this spot was just identified as someone's resting hand.
+   * the page (touching, or hovering on newer iPads), and whether this spot was
+   * just identified as someone's resting hand. Accepts a PointerEvent or the
+   * touchAsPointer() shape.
    */
-  isPalm(e) {
+  isPalm(e, useZone = true) {
     if (e.pointerType !== 'touch') return false;
     if (this._penDown) return true;
     if (performance.now() - (this._lastPenAt || -1e9) < PEN_GRACE_MS) return true;
+    if (performance.now() - (this._lastHoverAt || -1e9) < HOVER_GRACE_MS) return true;
     if ((e.width || 0) > 45 || (e.height || 0) > 45) return true;
-    if (this._palmZone && performance.now() - this._palmZone.t < PALM_ZONE_MS &&
+    if (useZone && this._palmZone && performance.now() - this._palmZone.t < PALM_ZONE_MS &&
         Math.hypot(e.clientX - this._palmZone.x, e.clientY - this._palmZone.y) < PALM_ZONE_R) return true;
     return false;
   }
@@ -998,44 +1169,156 @@ export class Editor {
     this._palmZone = { x: p.clientX ?? p.x, y: p.clientY ?? p.y, t: performance.now() };
   }
 
-  onDown(e) {
-    if (e.target.closest('.tbox, .apin, .tick, .glass, .hit, .selframe')) return;
-    if (e.pointerType === 'pen') {
-      this._penDown = true; this._lastPenAt = performance.now();
-      // Any touch already on the glass the instant the Pencil lands is the writer's
-      // own hand, not a deliberate second contact — this is what stopped a stroke
-      // dead or spun it into a pinch whenever a resting hand had already been
-      // (mis)read as a real finger before the tip touched down.
-      for (const [id, pt] of [...this._pointers]) {
-        if (pt.type === 'touch') { this._pointers.delete(id); this._notePalm(pt); }
-      }
-      if (this._pan) this._pan = null;
-      if (this._pinch) { this._pinch = null; this._twoTap = null; }
-    }
-    if (this.isPalm(e)) { this._notePalm(e); return; }
-    this._pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType, downAt: performance.now() });
+  /** The Pencil, with a drawing tool, landing on a checkbox / hit area inks. */
+  _inkableOn(e, el) {
+    return e.pointerType === 'pen' && el.matches('.tick, .glass, .hit') &&
+      !this._space && !INK_TOOLS_EXCLUDE.includes(this.app.tool.name);
+  }
 
+  /** The Pencil on a text box that isn't being edited, with any tool but Text, inks. */
+  _penInksOnBox(e, box) {
+    if (e.pointerType !== 'pen' || this.app.tool.name === 'text') return false;
+    return !(box === document.activeElement || box.contains(document.activeElement));
+  }
+
+  /** The on-page button a press started on — or, if the page re-rendered since
+   *  (each saved stroke rebuilds the overlay), its replacement. */
+  _liveBtn(el, pid, k) {
+    if (el.isConnected) return el;
+    if (!pid || !k) return null;
+    const pg = this.doc.querySelector(`.page[data-pid="${CSS.escape(pid)}"]`);
+    return pg?.querySelector(`.ov [data-k="${CSS.escape(k)}"]`) || null;
+  }
+
+  /** Focus a text box and put the caret under (x, y). */
+  _focusBoxAt(box, x, y) {
+    try { box.focus({ preventScroll: true }); } catch { box.focus(); }
+    let r = null;
+    if (document.caretRangeFromPoint) r = document.caretRangeFromPoint(x, y);
+    else if (document.caretPositionFromPoint) {
+      const p = document.caretPositionFromPoint(x, y);
+      if (p) { r = document.createRange(); r.setStart(p.offsetNode, p.offset); }
+    }
+    const sel = window.getSelection?.();
+    if (!sel) return;
+    if (!r || !box.contains(r.startContainer)) { r = document.createRange(); r.selectNodeContents(box); r.collapse(false); }
+    else r.collapse(true);
+    sel.removeAllRanges(); sel.addRange(r);
+  }
+
+  /** Undo an in-progress erase without recording it (it was a palm, not the user). */
+  _revertErase() {
+    const er = this._erase; this._erase = null;
+    if (!er) return;
+    this.clearLive(er.page);
+    if (!er.changed) return;
+    er.page.strokes = er.before.slice(); er.page.objects = er.beforeObjs.slice();
+    this.renderPage(er.page); this.queueSave(er.page);
+  }
+
+  _blurEditing() {
+    const ae = document.activeElement;
+    if (ae && ae !== document.body && ae.isContentEditable && this.root.contains(ae)) ae.blur();
+  }
+
+  /** Ignore this pointer until it lifts, and remember where it was. */
+  _reject(e) {
+    this._rejected.add(e.pointerId);
+    this._pointers.delete(e.pointerId);
+    this._notePalm(e);
+  }
+
+  onDown(e) {
+    // Overlay controls handle their own taps (bindInput activates them), with three
+    // exceptions that behave like the page underneath:
+    //  - the Pencil with a drawing tool on a checkbox / hit area inks (a tick drawn
+    //    in a to-do box, a letter that happens to start on one; see onUp for taps);
+    //  - the Pencil on a text box that isn't being edited inks;
+    //  - a finger on a checkbox / hit area can still start a scroll or a pinch.
+    const ov = e.target.closest('.tbox, .apin, .tick, .glass, .hit, .selframe');
+    let onBtn = null, skip = false;
+    if (ov) {
+      if (ov.matches('.tbox')) skip = !this._penInksOnBox(e, ov);
+      else if (this._inkableOn(e, ov)) onBtn = ov;
+      else skip = !(e.pointerType === 'touch' && ov.matches('.tick, .glass, .hit'));
+    }
+    const penGap = e.pointerType === 'pen' ? performance.now() - (this._lastPenUpAt ?? -1e9) : Infinity;
+    // (The Pencil-landed bookkeeping already ran in bindInput's capture listener —
+    // it has to, because some on-page targets stop the event before it gets here.)
+    if (skip) return;
+    // A pointerdown is always a brand-new contact; if the system ever reuses an id
+    // whose lift we never saw, it must not inherit the old palm verdict.
+    this._rejected.delete(e.pointerId);
+    if (this.isPalm(e)) { this._reject(e); return; }
+    // Writing on the page ends typing in a text box. Cancelling touchstart (above)
+    // also cancels Safari's own tap-to-blur, so do it here.
+    if (e.pointerType !== 'touch') this._blurEditing();
+    this._pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType, downAt: performance.now() });
+    const fingerOnBox = !!ov && !onBtn && e.pointerType === 'touch';
+    return this._onDownRest(e, onBtn, penGap, fingerOnBox);
+  }
+
+  /** The Pencil just touched the page (or something on it). Runs before any
+   *  on-page handler can stop the event. */
+  _penLanded() {
+    this._penDown = true; this._lastPenAt = performance.now();
+    // A finger that is mid-tap on a checkbox when the Pencil lands is the hand.
+    for (const [id, bt] of [...this._btnTaps]) if (bt.type === 'touch') this._btnTaps.delete(id);
+    this._boxTap = null;
+    // Any touch already on the glass the instant the Pencil lands is the writer's
+    // own hand, not a deliberate second contact — this is what stopped a stroke
+    // dead or spun it into a pinch whenever a resting hand had already been
+    // (mis)read as a real finger before the tip touched down.
+    for (const [id, pt] of [...this._pointers]) {
+      if (pt.type === 'touch') { this._pointers.delete(id); this._rejected.add(id); this._notePalm(pt); }
+    }
+    // If finger drawing is on and that hand had started inking, drop its mark.
+    const owner = this._draw?.id ?? this._erase?.id ?? this._lasso?.id;
+    if (owner != null && this._rejected.has(owner)) {
+      // ...and if it had been erasing, put back whatever it rubbed out.
+      this._revertErase();
+      this.cancelDraw();
+    }
+    // ...and whatever that hand did to the view while it was being mistaken for a
+    // finger (a drift-pan, a settling "pinch") is undone, so the page doesn't sit
+    // shifted under the nib.
+    if (this._pan || this._pinch) this._restoreView();
+    this._pan = null; this._pinch = null; this._twoTap = null;
+    // Belt and braces: never let a stray native selection eat the next stroke.
+    const sel = window.getSelection?.();
+    if (sel && sel.rangeCount && !document.activeElement?.isContentEditable) sel.removeAllRanges();
+  }
+
+  _onDownRest(e, onBtn, penGap, fingerOnBox) {
     // Only two TOUCHES arriving together are a pinch. A pencil sharing the map with
     // a touch must never count toward that, and a touch that shows up well after an
     // already-settled one is a hand shifting, not a second finger joining a gesture.
     const touches = [...this._pointers.values()].filter(p => p.type === 'touch');
     if (e.pointerType === 'touch' && touches.length === 2) {
       const [a, b] = touches;
-      if (Math.abs(a.downAt - b.downAt) > PAIR_WINDOW_MS) {
-        this._pointers.delete(e.pointerId);
-        this._notePalm(e);
-        return;
-      }
+      if (Math.abs(a.downAt - b.downAt) > PAIR_WINDOW_MS) { this._reject(e); return; }
+      if (!this._pan) this._gestureOrigin = { zoom: this.zoom, tx: this.tx, ty: this.ty };
+      // A pinch that began on a checkbox is a pinch, not a tap on it.
+      for (const [id, bt] of [...this._btnTaps]) if (bt.type === 'touch') this._btnTaps.delete(id);
       this.cancelDraw(); this.startPinch(); return;
     }
-    if (touches.length > 2) { this._pointers.delete(e.pointerId); this._notePalm(e); return; }
+    if (touches.length > 2) { this._reject(e); return; }
 
     if (e.pointerType === 'pen') this.app.notePen();
 
     const mode = this.inputMode(e);
-    if (mode === 'pan') { this._pan = { x: e.clientX, y: e.clientY, tx: this.tx, ty: this.ty }; return; }
+    if (mode === 'pan') {
+      this._gestureOrigin = { zoom: this.zoom, tx: this.tx, ty: this.ty };
+      this._pan = { id: e.pointerId, x: e.clientX, y: e.clientY, tx: this.tx, ty: this.ty, live: false };
+      return;
+    }
+    // A finger on a checkbox may scroll or pinch from there, but never starts the
+    // current tool (finger drawing on) — that tap belongs to the box.
+    if (fingerOnBox) return;
 
-    this.vp.setPointerCapture?.(e.pointerId);
+    // Capture can throw if the pointer is already gone (cancelled by the system
+    // between dispatch and here); that must never abort the stroke itself.
+    try { this.vp.setPointerCapture?.(e.pointerId); } catch {}
     const hit = this.toPage(e.clientX, e.clientY);
     const tool = this.app.tool;
 
@@ -1051,24 +1334,38 @@ export class Editor {
 
     const draw = new Ink.StrokeCapture(tool.name === 'shapes' ? 'pen' : tool.name, tool.color, tool.size);
     draw.add(hit.x, hit.y, e.pressure, performance.now());
-    this._draw = { id: e.pointerId, cap: draw, page: hit.page, lastMove: performance.now(), forceShape: tool.name === 'shapes' };
+    this._draw = { id: e.pointerId, cap: draw, page: hit.page, lastMove: performance.now(), t0: performance.now(),
+                   forceShape: tool.name === 'shapes', dotOK: e.pointerType !== 'touch', onBtn, penGap };
     this.paintLive();
   }
 
   onMove(e) {
-    if (e.pointerType === 'pen') this._lastPenAt = performance.now();
+    // A Pencil in contact owns the page (PEN_GRACE after it lifts). A Pencil merely
+    // hovering above the glass (newer iPads) counts for a short window only, so a
+    // finger can scroll again soon after the Pencil moves away.
+    if (e.pointerType === 'pen') { if (e.buttons || this._penDown) this._lastPenAt = performance.now(); else this._lastHoverAt = performance.now(); }
+    if (this._rejected.has(e.pointerId)) return;
     if (this.isPalm(e) && !this._pointers.has(e.pointerId)) return;
     if (this._pointers.has(e.pointerId)) {
       const p = this._pointers.get(e.pointerId); p.x = e.clientX; p.y = e.clientY;
     }
-    if (this._pinch && this._touchPair().every(Boolean)) { this.movePinch(); return; }
+    if (this._pinch) { if (this._touchPair().every(Boolean)) this.movePinch(); return; }
     if (this._pan) {
+      // Only the finger that started the pan moves the page — never a hovering
+      // Pencil or some other contact's coordinates.
+      if (e.pointerId !== this._pan.id) return;
+      if (!this._pan.live) {
+        // A hand settling onto the glass wobbles a few pixels; a scroll doesn't.
+        if (Math.hypot(e.clientX - this._pan.x, e.clientY - this._pan.y) < PAN_SLOP_PX) return;
+        this._pan.live = true;
+        this._pan.x = e.clientX; this._pan.y = e.clientY;
+      }
       this.tx = this._pan.tx + (e.clientX - this._pan.x);
       this.ty = this._pan.ty + (e.clientY - this._pan.y);
       this.applyTransform();
       return;
     }
-    if (this._moveSel) { this.moveSelection(e); return; }
+    if (this._moveSel) { if (this._moveSel.id == null || this._moveSel.id === e.pointerId) this.moveSelection(e); return; }
 
     const owner = this._draw?.id ?? this._erase?.id ?? this._lasso?.id;
     if (owner != null && e.pointerId !== owner) return;
@@ -1096,7 +1393,9 @@ export class Editor {
   }
 
   onUp(e) {
-    if (e.pointerType === 'pen') { this._penDown = false; this._lastPenAt = performance.now(); }
+    if (e.pointerType === 'pen') { this._penDown = false; this._lastPenAt = this._lastPenUpAt = performance.now(); }
+    // A resting hand lifting off ends nothing — not a stroke, a pan, or a selection drag.
+    if (this._rejected.delete(e.pointerId)) return;
     this._pointers.delete(e.pointerId);
     if (this._touchPair().some(p => !p) && this._pinch) {
       const tt = this._twoTap;
@@ -1109,8 +1408,17 @@ export class Editor {
         return;
       }
     }
-    if (this._pan && this._pointers.size === 0) { this._pan = null; this.updatePageNo(); return; }
-    if (this._moveSel) { this.endMoveSelection(); return; }
+    if (this._pan && e.pointerId === this._pan.id) {
+      // A finger tap (never moved far enough to scroll) on the page ends text editing.
+      if (!this._pan.live && e.type === 'pointerup') this._blurEditing();
+      this._pan = null; this._gestureOrigin = null; this.updatePageNo(); return;
+    }
+    if (this._pan && this._pointers.size === 0) { this._pan = null; this._gestureOrigin = null; this.updatePageNo(); return; }
+    if (!this._pinch && !this._pan) this._gestureOrigin = null;
+    if (this._moveSel) {
+      if (this._moveSel.id == null || this._moveSel.id === e.pointerId) this.endMoveSelection();
+      return;
+    }
 
     // A resting hand lifting off must not end the stroke the pencil is still drawing.
     const owner = this._draw?.id ?? this._erase?.id ?? this._lasso?.id;
@@ -1120,12 +1428,27 @@ export class Editor {
     if (this._lasso) { this.commitLasso(); return; }
     if (!this._draw) return;
 
-    const { cap, page } = this._draw;
+    const { cap, page, onBtn } = this._draw;
     const held = performance.now() - this._draw.lastMove;
+    if (onBtn) {
+      const r0 = cap.raw[0];
+      const reach = Math.max(0, ...cap.raw.map(q => Math.hypot(q.x - r0.x, q.y - r0.y)));
+      // A deliberate Pencil tap on a checkbox toggles it and leaves no ink — unless it
+      // came mid-handwriting (an i-dot or full stop that happened to land on a hidden
+      // hit area), in which case it's ink. Anything that moved is ink too. The native
+      // click is always swallowed (bindInput); the editor activates the box itself.
+      if (reach < 4 && performance.now() - this._draw.t0 < 600 && this._draw.penGap > 450) {
+        this.clearLive(page); this._draw = null;
+        this._liveBtn(onBtn, page.id, onBtn.dataset.k)?.click();
+        return;
+      }
+    }
     let pts = cap.smoothed();
 
-    if (pts.length >= 6) {
-      if (this._draw.forceShape || held > 420) {
+    // pts is flat [x, y, p, ...]. A single sample is a deliberate dot from the Pencil
+    // (i-dots, full stops) and used to be thrown away; from a finger it isn't kept.
+    if (pts.length >= 6 || (pts.length >= 3 && this._draw.dotOK)) {
+      if (pts.length >= 6 && (this._draw.forceShape || held > 420)) {
         const sh = Ink.recognizeShape(pts);
         if (sh) { pts = Ink.shapeToPoints(sh); if (navigator.vibrate) navigator.vibrate(8); }
       }
@@ -1140,6 +1463,15 @@ export class Editor {
     }
     this.clearLive(page);
     this._draw = null;
+  }
+
+  /** Put the view back where it was when the current touch gesture began. */
+  _restoreView() {
+    const o = this._gestureOrigin; this._gestureOrigin = null;
+    if (!o) return;
+    if (o.zoom === this.zoom && o.tx === this.tx && o.ty === this.ty) return;
+    this.zoom = o.zoom; this.tx = o.tx; this.ty = o.ty;
+    this.applyTransform();
   }
 
   cancelDraw() {
@@ -1371,16 +1703,28 @@ export class Editor {
       if (k === 'copy') this.duplicateSelection();
       if (k === 'share') this.shareSelection();
     });
+    // A resting hand landing on the selection must not drag or resize it.
+    const palmHere = ev => {
+      if (!this.isPalm(ev) && !this._rejected.has(ev.pointerId)) return false;
+      ev.stopPropagation(); this._reject(ev); return true;
+    };
     this.selEl.querySelectorAll('.h').forEach(h => h.addEventListener('pointerdown', ev => {
+      if (palmHere(ev)) return;
       ev.stopPropagation(); ev.preventDefault();
+      // The handles are rebuilt on every move; capture on the viewport so the drag
+      // isn't stranded on a node that no longer exists.
+      try { this.vp.setPointerCapture?.(ev.pointerId); } catch {}
       this.startScale(ev, h.className.split(' ')[1]);
     }));
-    this.selEl.addEventListener('pointerdown', ev => {
+    // Assigned, not added: this frame is redrawn on every move, and addEventListener
+    // here used to stack a fresh copy of the handler each time.
+    this.selEl.onpointerdown = ev => {
       if (ev.target.closest('.selbar, .h')) return;
+      if (palmHere(ev)) return;
       ev.stopPropagation();
-      this._moveSel = { x: ev.clientX, y: ev.clientY, moved: false, before: this.snapshotSel() };
-      this.selEl.setPointerCapture?.(ev.pointerId);
-    });
+      this._moveSel = { id: ev.pointerId, x: ev.clientX, y: ev.clientY, moved: false, before: this.snapshotSel() };
+      try { this.selEl.setPointerCapture?.(ev.pointerId); } catch {}
+    };
   }
 
   snapshotSel() {
@@ -1403,7 +1747,7 @@ export class Editor {
     return hit.x >= b.x0 - 8 && hit.x <= b.x1 + 8 && hit.y >= b.y0 - 8 && hit.y <= b.y1 + 8;
   }
   startMoveSelection(e, hit) {
-    this._moveSel = { x: e.clientX, y: e.clientY, before: this.snapshotSel() };
+    this._moveSel = { id: e.pointerId, x: e.clientX, y: e.clientY, before: this.snapshotSel() };
   }
   moveSelection(e) {
     const m = this._moveSel, s = this.selection;
@@ -1417,7 +1761,7 @@ export class Editor {
   }
   startScale(ev, corner) {
     const s = this.selection;
-    this._moveSel = { x: ev.clientX, y: ev.clientY, scale: corner, before: this.snapshotSel(), b0: { ...s.bounds } };
+    this._moveSel = { id: ev.pointerId, x: ev.clientX, y: ev.clientY, scale: corner, before: this.snapshotSel(), b0: { ...s.bounds } };
   }
   scaleSelection(e) {
     const m = this._moveSel, s = this.selection, b = m.b0;
